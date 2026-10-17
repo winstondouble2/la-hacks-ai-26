@@ -13,14 +13,14 @@ from browseen.tracing import llm_span, mark_healed, run_span, step_span  # noqa:
 def demo(mode: str, break_step: int | None) -> None:
     """Stand-in for the real agent: shows the trace shape we want to see."""
     steps = [("goto", "/login"), ("type", "#user"), ("click", "#submit")]
-    with run_span("demo login", mode):
+    with run_span("demo login", mode, program_version=None if mode == "llm" else 1):
         for i, (action, target) in enumerate(steps):
-            with step_span(i, action, target) as span:
+            with step_span(i, action, mode, target) as span:
                 if mode == "llm":
                     with llm_span("decide next action"):
                         time.sleep(0.6)
                 if i == break_step:
-                    mark_healed(span, f"selector {target} missing")
+                    mark_healed(span, f"selector {target} missing", tier=2)
                     with llm_span("repair step"):
                         time.sleep(0.6)
                 time.sleep(0.05)
