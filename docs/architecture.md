@@ -56,16 +56,92 @@ This component wraps a Browser Use `Agent` and uses its step hooks (`on_step_sta
 - **The agent's stated goal for the step**, which becomes the step's intent.
 - **Tokens and latency** for the step, which feed the cost counters.
 
-Output: `runs/<run_id>/trace.json` (gitignored), plus Browser Use's own history file from `save_to_file()`.
+**Built.** The code is in `browseen/recorder/`, and you run it like this:
 
-Two setup notes:
+```bash
+python -m browseen record 'Buy $qty of $product and check out as $name, $address' --url http://localhost:8765/ --input product="Blue Mug" --input qty=2 --input name="Ada Lovelace" --input address="1 Main St" --name buy-item
+```
 
-- **Hour-one check:** pin the browser-use version in `requirements.txt`. The latest on PyPI is 0.13.11, which needs Python ≥ 3.11. Confirm that the history has element data.
-- **Model gotcha:** Browser Use's `ChatAnthropic` forces `tool_choice` unless thinking is set, and Claude Opus 5.5 / Sonnet 5.5 reject forced tool choice with HTTP 400. Use `ChatAnthropic(model="claude-opus-5-5", thinking={"type": "adaptive"})`, and don't set `temperature`, `top_p` or `seed`.
+- **The task is a template plus inputs.** The agent gets the filled-in text, and the trace keeps both, so the compiler knows exactly which literals are parameters.
+- **Viewing a run:** `python -m browseen show runs/<run_id>` prints it without any API calls.
+- **On the mini shop,** a recording takes about 30 s and costs about $0.18 (6 LLM calls). The first call writes the prompt cache; later ones read it.
+
+Each run writes `runs/<run_id>/` (gitignored):
+
+| File | What it is |
+|---|---|
+| `trace.json` | The **trace format**, defined in `browseen/recorder/trace.py`, which B owns. It holds, for each step: the URL before and after; the agent's `goal` (which becomes the intent), memory and evaluation; the actions with Browser Use's raw names and params; the element for each action (`tag`, `attributes`, absolute `xpath`, `ax_name`, `bounds`); the step's duration and token usage; and the page and screenshot paths. It also holds the run's totals and the agent's own success claim. Step 0 is the initial navigation. |
+| `history.json` | Browser Use's own history file, which the benchmark's Replay baseline needs |
+| `events.jsonl` | The run as dashboard events (`mode: "llm"`, `version: 0`, steps `a1`, `a2`, …), with per-step `llm_calls` / `tokens` / `usd` |
+| `html/step_NN_before.html`, `html/step_NN_after.html` | The page before and after step NN. **"Before" is what the compiler tests locators on**; every recorded XPath matched exactly one element in it. |
+| `screenshots/step_NN.png` | Taken by Browser Use at the start of step NN |
+
+The Browser Use setup is shared in `browseen/agent.py` (`make_agent()`), which A's tier-3 healer should use too. Each setting fixes a real failure with Claude Opus 5.5:
+
+- **`thinking={"type": "adaptive"}`.** Without it, the wrapper forces `tool_choice`, and the API returns HTTP 400.
+- **`use_thinking=False`.** Without it, Browser Use's `thinking` output field is refused as reasoning extraction.
+- **Server-side `fallbacks` to `claude-opus-4-8`.** If Opus 5.5 refuses a step, Anthropic retries it on the fallback model.
+- **`enable_default_extensions=False`.** Otherwise a cookie-banner auto-dismisser hides banners from the recording.
+- **`use_judge=False`.** The judge makes extra LLM calls; we verify success ourselves.
+- **Chrome flags for the macOS keychain.** They stop Chromium from hanging at startup.
+
+Prices are in `browseen/costs.py`.
 
 ### Compiler (B)
 
-The compiler is a few deterministic passes plus **one LLM pass**:
+**Built** in `browseen/compiler/`: deterministic passes (v0) plus one LLM pass (v1).
+
+```bash
+python -m browseen compile runs/<run_id> --name mini-shop
+```
+
+That writes `programs/mini-shop/v1.yaml` and prints a compile report: each trace action is kept (and which step it became), dropped (with the reason) or unsupported, plus each locator candidate with ✓/✗, and the LLM pass's tokens and cost. Add `--dry-run` to print the program without saving, or `--no-llm` for v0 only. The compiler refuses to write into an existing program folder.
+
+Compiled from the mini-shop recording, the program replays with Blue Mug ×2 and with Red Kettle ×1, with 0 LLM calls.
+
+**Normalize:**
+
+- *Mapped:* `click` → click, `input` → fill, `select_dropdown` → select, `send_keys` → press, later `navigate` → navigate.
+- *Dropped, with a reason:* the step-0 navigation, `done`, `wait`, `scroll`, read-only tools, failed actions, an input superseded by a later input into the same field, and a single click that changed nothing.
+- *Not handled in v0:* `extract`, and *unsupported* `go_back`, `upload_file`, tab switching and `evaluate`.
+
+**Locators.** Each saved page is loaded with scripts stripped and JavaScript off, so it's exactly the recorded DOM.
+
+- The element's real role and accessible name come from Playwright's `aria_snapshot()`.
+- Candidates are tried in this order: `data-testid`, then for form fields `label` and then role + name, for everything else role + name and then `text`, then `placeholder`, then a stable CSS selector (`#id` or `[name]`), then the XPath.
+- A candidate is kept **only if it matches exactly one element and that element is the recorded one.**
+
+**Parameters.** Recorded input values become `$params`, with the longest values replaced first. Short values such as `2` are replaced only as whole words, and literal `$` becomes `$$`. This applies to values, locator names and check text, but never to CSS or XPath.
+
+**Checks:**
+
+- Pre-checks: the page path, the target is unique, and the target is enabled (for clicks).
+- Post-checks: the field's value (for fill and select), the new page path, and the shortest text line on the new page that names an input (for example `$qty × $product`). That last one catches a wrong-item click.
+- Success check: a heading or text line on the final page that names an input.
+- A click that adds no text but makes its own target disappear (dismissing a banner) gets an `absent` post-check.
+
+**The LLM pass (v1)** is in `annotate.py`. It's one structured-output call to `claude-opus-5-5` (effort `medium`, with a server-side fallback to Opus 4.8) that costs about $0.015 per compile.
+
+- **What the model sees:** each step's action, target, page path, v0 intent, the recording agent's own goal, and a *container hint* (for example `dialog "Cookie consent"`, from the element's nearest dialog, banner or popup ancestor). It also sees the final page's text.
+- **What it returns:** an intent per step, which steps are optional, a description per param, and success text.
+
+Every suggestion passes a guard before it's used:
+
+- The step IDs must match exactly.
+- Intents may only use declared `$params`.
+- Only a `click` with a target can be optional, and we build its `when: {exists: <first locator>}` ourselves.
+- The success text must actually appear on the final page.
+
+If the call fails or is refused, or there's no API key, the compiler keeps the v0 output and prints a warning.
+
+On a recording that dismissed the shop's cookie wall (`?banner=1` on the mini shop), v1 marks that click optional, so the program runs it when the wall appears and skips it when consent is already stored. The v0 program fails in the second case.
+
+**Limits:**
+
+- The CSS and XPath fallbacks for parameter-dependent elements still point at the recorded item. The post-checks catch that.
+- Branches learned from heals and merging several recordings are not built.
+
+The full design, including the LLM pass:
 
 1. **Normalize.** Drop failed or no-op actions, collapse mis-click-then-correct sequences, and merge consecutive typing into one action.
 2. **Parameterize.** Literals that came from the task inputs become `$params`. The LLM pass names them and gives each a type.
@@ -181,15 +257,23 @@ These are the test sites we control (see [benchmark.md](benchmark.md#2-testbed-s
 
 ## CLI (B)
 
-Run commands as `python -m browseen <command>`. The entry point is `browseen/__main__.py`, which already has `--demo` for trying Sentry.
+**Built.** Run commands as `python -m browseen <command>`. The commands are in `browseen/cli.py`. The old forms `python -m browseen.recorder …` and `python -m browseen.compiler …` still work, and so does `python -m browseen --demo llm|compiled|healed|healed3` (the Sentry trace demo).
 
 | Command | Does |
 |---|---|
-| `record "<task>" --url <start>` | Run the agent once and save the trace |
-| `compile <trace>` | Trace → `programs/<name>/v1.yaml` |
-| `run <name> --param k=v` | Compiled run with automatic healing |
-| `diff <name> <a> <b>` | Show what changed between two versions |
-| `rollback <name> --to <v>` | Restore a version |
+| `record "<task with $params>" --url <start> --input k=v … [--name NAME] [--headless]` | Run the agent once and save the trace to `runs/<run_id>/` |
+| `show runs/<run_id>` | Print a recorded run, with no API calls |
+| `compile runs/<run_id> [--name NAME] [--no-llm] [--dry-run]` | Recorded run → `programs/<name>/v1.yaml` |
+| `run <name or file.yaml> --param k=v … [--version N] [--headless]` | Compiled run with automatic healing, via A's runtime (below). It first checks that every param is given, and lists the missing ones with examples. |
+| `diff <name> [a] [b]` | What changed between two versions: previous vs. latest, `a` vs. latest, or `a` vs. `b`. It compares the normalized YAML, so formatting differences don't show, and names the steps that were added, removed or changed. |
+| `rollback <name> --to <v>` | Saves the next version as a copy of `v`. Versions are append-only, so nothing is deleted, and the history records the rollback. |
+
+**The runtime hook (for A).** `run` calls `browseen.runtime.run_program(program, params, *, headless)`:
+
+- `program` is the loaded `Program` (the latest version, or the one asked for with `--version`);
+- `params` is the dict of typed inputs.
+
+It should return an object with a `success` attribute (or a plain bool), which sets the command's exit code. Until `browseen/runtime/` exists, `run` says that the runtime isn't on the branch yet. `tests/test_cli.py::test_run_calls_the_runtime_contract` pins down this contract.
 
 ## Tech stack
 

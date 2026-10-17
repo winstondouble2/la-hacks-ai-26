@@ -348,18 +348,6 @@
           "default": null,
           "title": "Name"
         },
-        "exact": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Exact"
-        },
         "label": {
           "anyOf": [
             {
@@ -419,6 +407,18 @@
           ],
           "default": null,
           "title": "Xpath"
+        },
+        "exact": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exact"
         }
       },
       "title": "Locator",

@@ -1,0 +1,194 @@
+program: mini-shop
+version: 1
+task: Buy $qty of $product and check out as $name, $address
+start_url: http://localhost:8765/
+params:
+  product:
+    type: string
+    example: Blue Mug
+  qty:
+    type: integer
+    example: 2
+  name:
+    type: string
+    example: Ada Lovelace
+  address:
+    type: string
+    example: 1 Main St
+steps:
+- id: s1
+  intent: Open the '$product' link
+  action:
+    type: click
+  target:
+    locators:
+    - role: link
+      name: $product
+      exact: true
+    - text: $product
+      exact: true
+    - css: a[href="product.html?id=blue-mug"]
+    - xpath: /html/body/main/ul/li[1]/a
+    fingerprint:
+      tag: a
+      role: link
+      name: Blue Mug
+      attributes:
+        href: product.html?id=blue-mug
+      xpath: /html/body/main/ul/li[1]/a
+  pre:
+  - url_matches: /(\?|#|$)
+  - target_unique: true
+  - target_enabled: true
+  post:
+  - url_matches: /product\.html(\?|#|$)
+  - text_visible: $product
+  timeout_ms: 5000
+- id: s2
+  intent: Enter $qty into 'Quantity'
+  action:
+    type: fill
+    value: $qty
+  target:
+    locators:
+    - label: Quantity
+      exact: true
+    - role: spinbutton
+      name: Quantity
+      exact: true
+    - css: '#qty'
+    - xpath: /html/body/main/input
+    fingerprint:
+      tag: input
+      role: spinbutton
+      name: Quantity
+      attributes:
+        id: qty
+        name: qty
+        type: number
+      xpath: /html/body/main/input
+  pre:
+  - url_matches: /product\.html(\?|#|$)
+  - target_unique: true
+  post:
+  - target_value: $qty
+  timeout_ms: 5000
+- id: s3
+  intent: Click 'Add to cart'
+  action:
+    type: click
+  target:
+    locators:
+    - role: button
+      name: Add to cart
+      exact: true
+    - text: Add to cart
+      exact: true
+    - css: '#add'
+    - xpath: /html/body/main/button
+    fingerprint:
+      tag: button
+      role: button
+      name: Add to cart
+      attributes:
+        id: add
+        type: button
+      xpath: /html/body/main/button
+  pre:
+  - url_matches: /product\.html(\?|#|$)
+  - target_unique: true
+  - target_enabled: true
+  post:
+  - url_matches: /checkout\.html(\?|#|$)
+  - text_visible: $qty × $product
+  timeout_ms: 5000
+- id: s4
+  intent: Enter $name into 'Full name'
+  action:
+    type: fill
+    value: $name
+  target:
+    locators:
+    - label: Full name
+      exact: true
+    - role: textbox
+      name: Full name
+      exact: true
+    - css: '#name'
+    - xpath: /html/body/main/form/input[1]
+    fingerprint:
+      tag: input
+      role: textbox
+      name: Full name
+      attributes:
+        id: name
+        name: name
+      xpath: /html/body/main/form/input[1]
+  pre:
+  - url_matches: /checkout\.html(\?|#|$)
+  - target_unique: true
+  post:
+  - target_value: $name
+  timeout_ms: 5000
+- id: s5
+  intent: Enter $address into 'Address'
+  action:
+    type: fill
+    value: $address
+  target:
+    locators:
+    - label: Address
+      exact: true
+    - role: textbox
+      name: Address
+      exact: true
+    - css: '#address'
+    - xpath: /html/body/main/form/input[2]
+    fingerprint:
+      tag: input
+      role: textbox
+      name: Address
+      attributes:
+        id: address
+        name: address
+      xpath: /html/body/main/form/input[2]
+  pre:
+  - url_matches: /checkout\.html(\?|#|$)
+  - target_unique: true
+  post:
+  - target_value: $address
+  timeout_ms: 5000
+- id: s6
+  intent: Click 'Place order'
+  action:
+    type: click
+  target:
+    locators:
+    - role: button
+      name: Place order
+      exact: true
+    - text: Place order
+      exact: true
+    - xpath: /html/body/main/form/button
+    fingerprint:
+      tag: button
+      role: button
+      name: Place order
+      attributes:
+        type: submit
+      xpath: /html/body/main/form/button
+  pre:
+  - url_matches: /checkout\.html(\?|#|$)
+  - target_unique: true
+  - target_enabled: true
+  post:
+  - url_matches: /done\.html(\?|#|$)
+  - text_visible: 'Order confirmed: $qty × $product'
+  timeout_ms: 5000
+success:
+- text_visible: 'Order confirmed: $qty × $product'
+history:
+- version: 1
+  source: compiled
+  reason: compiled from r_20261017-142906 (compiler v0, no LLM)
+  at: '2026-10-17T21:41:22Z'

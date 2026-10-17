@@ -13,6 +13,7 @@ Call Program.resolved(params) once per run to get a copy with them substituted.
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import re
 import sys
@@ -58,12 +59,12 @@ class Locator(_Model):
     testid: str | None = None
     role: str | None = None
     name: str | None = None
-    exact: bool | None = None
     label: str | None = None
     placeholder: str | None = None
     text: str | None = None
     css: str | None = None
     xpath: str | None = None
+    exact: bool | None = None
 
     @model_validator(mode="after")
     def _check(self) -> Locator:
@@ -236,7 +237,7 @@ class Program(_Model):
             raise KeyError(f"missing params: {missing}")
         if unknown := sorted(set(params) - set(self.params)):
             raise KeyError(f"unknown params: {unknown}")
-        values = {k: (str(v).lower() if isinstance(v, bool) else str(v)) for k, v in params.items()}
+        values = {k: _as_text(v) for k, v in params.items()}
         data = self.model_dump(mode="json")
         data.update(_substitute(self._templated(), values))
         return Program.model_validate(data)
@@ -271,6 +272,20 @@ def _param_refs(obj: Any) -> set[str]:
     return {m.group(1) for s in _strings(obj) for m in PARAM_RE.finditer(s) if m.group(1) != "$"}
 
 
+def _as_text(value: Any) -> str:
+    return str(value).lower() if isinstance(value, bool) else str(value)
+
+
+def param_refs(text: str) -> set[str]:
+    """The $params used in a string."""
+    return _param_refs(text)
+
+
+def substitute(text: str, values: dict[str, Any]) -> str:
+    """Fill $params in one string ($$ becomes $). Raises KeyError for a param with no value."""
+    return _substitute(text, {k: _as_text(v) for k, v in values.items()})
+
+
 def _substitute(obj: Any, values: dict[str, str]) -> Any:
     if isinstance(obj, str):
         return PARAM_RE.sub(lambda m: "$" if m.group(1) == "$" else values[m.group(1)], obj)
@@ -282,9 +297,9 @@ def _substitute(obj: Any, values: dict[str, str]) -> Any:
 
 
 def _drop_empty(obj: Any) -> Any:
-    """Leave empty lists and dicts out of the YAML, so files stay short."""
+    """Leave empty lists, dicts and strings out of the YAML, so files stay short."""
     if isinstance(obj, dict):
-        return {k: _drop_empty(v) for k, v in obj.items() if v not in ([], {})}
+        return {k: _drop_empty(v) for k, v in obj.items() if v not in ([], {}, "")}
     if isinstance(obj, list):
         return [_drop_empty(v) for v in obj]
     return obj
@@ -317,6 +332,39 @@ def latest(name: str, root: Path = PROGRAMS_DIR) -> Program:
     if not (found := versions(name, root)):
         raise FileNotFoundError(f"no versions of {name!r} under {root}")
     return load(program_path(name, found[-1], root))
+
+
+def rollback(name: str, to: int, root: Path = PROGRAMS_DIR) -> Program:
+    """Save the next version as a copy of v`to`. Versions are append-only, so nothing is deleted."""
+    current = latest(name, root)
+    if to not in versions(name, root):
+        raise FileNotFoundError(f"{name} has no v{to}; versions: {versions(name, root)}")
+    if to == current.version:
+        raise ValueError(f"v{to} is already the latest version of {name}")
+    new = load(program_path(name, to, root)).model_copy(deep=True)
+    new.version = current.version + 1
+    new.history = [*current.history, Change(version=new.version, source="manual", reason=f"rollback to v{to}",
+                                            at=datetime.now(timezone.utc).replace(microsecond=0))]
+    save(new, root)
+    return new
+
+
+def diff(a: Program, b: Program) -> str:
+    """Unified diff of two versions in normalized YAML, so formatting differences don't show."""
+    return "".join(difflib.unified_diff(
+        a.to_yaml().splitlines(keepends=True), b.to_yaml().splitlines(keepends=True),
+        fromfile=f"{a.program}/v{a.version}", tofile=f"{b.program}/v{b.version}"))
+
+
+def changed_steps(a: Program, b: Program) -> dict[str, list[str]]:
+    """Step ids added, removed or changed between two versions."""
+    old = {s.id: s for s in a.steps}
+    new = {s.id: s for s in b.steps}
+    return {
+        "added": [i for i in new if i not in old],
+        "removed": [i for i in old if i not in new],
+        "changed": [i for i in new if i in old and new[i] != old[i]],
+    }
 
 
 def main(argv: list[str] | None = None) -> None:

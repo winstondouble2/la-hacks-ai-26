@@ -1,12 +1,18 @@
-"""Entry point: python -m browseen"""
+"""Entry point: python -m browseen <command>. Commands are in browseen/cli.py.
+
+  python -m browseen record | show | compile | run | diff | rollback ...
+  python -m browseen --demo llm|compiled|healed|healed3    # Sentry trace demo, no agent
+"""
 
 from browseen.observability import init_sentry
 
-init_sentry()
+init_sentry()  # also loads .env, which browser_use reads at import time
 
 import argparse  # noqa: E402
+import sys  # noqa: E402
 import time  # noqa: E402
 
+from browseen import cli  # noqa: E402
 from browseen.tracing import (  # noqa: E402
     agent_span,
     llm_span,
@@ -41,20 +47,16 @@ def demo(mode: str, break_step: int | None, tier: int = 2) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="browseen")
-    parser.add_argument("task", nargs="?", help="task for the browser agent")
-    parser.add_argument("--demo", choices=["llm", "compiled", "healed", "healed3"])
-    args = parser.parse_args()
-
-    if args.demo:
+    if len(sys.argv) > 1 and sys.argv[1].startswith("--demo"):
+        parser = argparse.ArgumentParser(prog="python -m browseen")
+        parser.add_argument("--demo", required=True, choices=["llm", "compiled", "healed", "healed3"])
+        args = parser.parse_args()
         healing = args.demo.startswith("healed")
         demo("compiled" if healing else args.demo,
              break_step=2 if healing else None,
              tier=3 if args.demo == "healed3" else 2)
         return
-    if not args.task:
-        parser.error("no task given")
-    print(f"TODO: run agent for task: {args.task}")
+    sys.exit(cli.main())
 
 
 if __name__ == "__main__":
