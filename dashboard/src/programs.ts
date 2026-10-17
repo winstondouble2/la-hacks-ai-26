@@ -1,38 +1,66 @@
-// Program format: docs/architecture.md → "Program format" (owner: B).
-// One YAML file per version at programs/<name>/v<N>.yaml.
+// Program format, mirrored from browseen/program.py (owner: B; JSON Schema in
+// programs/program.schema.json). One YAML file per version: programs/<name>/v<N>.yaml.
 import { parse } from 'yaml'
 
-type Check = Record<string, unknown>
+export interface Param {
+  type: 'string' | 'integer' | 'number' | 'boolean'
+  example?: string | number | boolean
+  description?: string
+}
+
+// Exactly one of testid, role, label, placeholder, text, css, xpath is set.
+export interface Locator {
+  testid?: string
+  role?: string
+  name?: string
+  exact?: boolean
+  label?: string
+  placeholder?: string
+  text?: string
+  css?: string
+  xpath?: string
+}
+
+// Exactly one kind is set.
+export interface Check {
+  url_matches?: string
+  text_visible?: string
+  exists?: Locator
+  absent?: Locator
+  target_unique?: true
+  target_enabled?: true
+  target_value?: string
+}
 
 export interface Step {
   id: string
   intent: string
+  action: { type: string; value?: string; url?: string; key?: string; into?: string }
+  target?: { locators: Locator[]; fingerprint?: Record<string, unknown> }
   when?: Check
-  action: { type: string; value?: string; url?: string }
-  target?: {
-    locators: Record<string, string>[]
-    fingerprint?: Record<string, string>
-  }
   pre?: Check[]
   post?: Check[]
-  risk?: 'read' | 'write' | 'irreversible'
+  timeout_ms?: number
 }
 
-export interface HistoryEntry {
+export interface Change {
   version: number
-  step: string
-  tier: number
-  reason: string
+  source: 'recorded' | 'compiled' | 'healed' | 'manual'
+  step?: string
+  tier?: 1 | 2 | 3
+  reason?: string
+  at?: string
 }
 
 export interface Program {
   program: string
   version: number
-  params: Record<string, string>
+  task: string
   start_url: string
+  params?: Record<string, Param>
   steps: Step[]
-  success: Check[]
-  history: HistoryEntry[]
+  success?: Check[]
+  history?: Change[]
 }
 
 // No directory listing yet, so fetch v1, v2, … until one is missing.
@@ -47,18 +75,23 @@ export async function loadVersions(name: string): Promise<Program[]> {
   return versions
 }
 
-// A check like {url_matches: "^/shop"} reads as `url_matches ^/shop`, and
-// {exists: {role: button, name: "Accept all"}} as `exists button "Accept all"`.
-export function describeCheck(check: Check): string {
-  return Object.entries(check)
-    .map(([k, v]) =>
-      v && typeof v === 'object' ? `${k} ${describeLocator(v as Record<string, string>)}` : `${k} ${v}`,
-    )
-    .join(', ')
+const LOCATOR_KINDS = ['testid', 'role', 'label', 'placeholder', 'text', 'css', 'xpath'] as const
+
+// Same short form as Locator.describe() in program.py, e.g. role=button[name="Add to cart"].
+export function describeLocator(loc: Locator): string {
+  const kind = LOCATOR_KINDS.find((k) => loc[k] !== undefined) ?? 'css'
+  if (kind === 'role') return loc.name !== undefined ? `role=${loc.role}[name="${loc.name}"]` : `role=${loc.role}`
+  return `${kind}=${loc[kind]}`
 }
 
-export function describeLocator(loc: Record<string, string>): string {
-  const [[kind, value]] = Object.entries(loc)
-  const name = loc.name ? ` "${loc.name}"` : ''
-  return kind === 'role' ? `${value}${name}` : `${kind}=${value}`
+// {url_matches: "^/shop"} → `url_matches ^/shop`; {target_unique: true} → `target_unique`;
+// {exists: {role: button, name: "Accept all"}} → `exists role=button[name="Accept all"]`.
+export function describeCheck(check: Check): string {
+  return Object.entries(check)
+    .map(([k, v]) => {
+      if (v === true) return k
+      if (v && typeof v === 'object') return `${k} ${describeLocator(v as Locator)}`
+      return `${k} ${v}`
+    })
+    .join(', ')
 }

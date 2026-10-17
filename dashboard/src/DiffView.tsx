@@ -2,9 +2,37 @@ import { useState } from 'react'
 import { stringify } from 'yaml'
 import type { Program, Step } from './programs'
 
-// Steps are matched by id. A step is "changed" if its YAML differs.
+// Hand-written and compiler-written files order keys differently and may omit
+// defaults, so steps are put in one canonical shape before comparing:
+// Step fields in program.py order, nested keys sorted, defaults filled in.
+const STEP_ORDER = ['id', 'intent', 'action', 'target', 'when', 'pre', 'post', 'timeout_ms']
+
+function sortDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortDeep)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, v]) => !(Array.isArray(v) && v.length === 0))
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, v]) => [k, sortDeep(v)]),
+    )
+  }
+  return value
+}
+
+function canonical(step: Step): Record<string, unknown> {
+  const filled: Record<string, unknown> = { timeout_ms: 5000, ...step }
+  const out: Record<string, unknown> = {}
+  for (const key of STEP_ORDER) {
+    const v = sortDeep(filled[key])
+    if (v !== undefined && !(Array.isArray(v) && v.length === 0)) out[key] = v
+  }
+  return out
+}
+
+// Steps are matched by id. A step is "changed" if its canonical YAML differs.
 function stepYaml(step: Step | undefined): string[] {
-  return step ? stringify(step, { lineWidth: 0 }).trimEnd().split('\n') : []
+  return step ? stringify(canonical(step), { lineWidth: 0 }).trimEnd().split('\n') : []
 }
 
 export default function DiffView({ versions }: { versions: Program[] }) {
@@ -14,7 +42,7 @@ export default function DiffView({ versions }: { versions: Program[] }) {
   const b = versions[to]
 
   const ids = [...new Set([...a.steps.map((s) => s.id), ...b.steps.map((s) => s.id)])]
-  const reasons = b.history.filter((h) => h.version > a.version && h.version <= b.version)
+  const reasons = (b.history ?? []).filter((h) => h.version > a.version && h.version <= b.version)
 
   return (
     <div className="flex flex-col gap-5">
@@ -24,7 +52,8 @@ export default function DiffView({ versions }: { versions: Program[] }) {
         <VersionPicker versions={versions} value={to} onChange={setTo} />
         {reasons.map((h) => (
           <span key={h.version} className="rounded-full bg-heal-wash px-3 py-1 font-sans text-sm text-heal-ink">
-            v{h.version}: {h.step} healed at tier {h.tier}, {h.reason}
+            v{h.version}: {h.source === 'healed' ? `${h.step} healed at tier ${h.tier}` : h.source}
+            {h.reason ? `, ${h.reason}` : ''}
           </span>
         ))}
       </div>

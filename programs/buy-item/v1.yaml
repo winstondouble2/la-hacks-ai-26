@@ -1,75 +1,153 @@
-# EXAMPLE, hand-written by D from the proposal in docs/architecture.md.
-# B owns this format; replace with the compiler's real output once the schema is frozen.
+# Reference program for the mini shop fixture (browseen/recorder/fixtures/mini_shop).
+# Hand-written from the smoke recording; the compiler will produce files in this shape.
+# Format: browseen/program.py. Serve the fixture with:
+#   python -m http.server 8765 -d browseen/recorder/fixtures/mini_shop
 program: buy-item
 version: 1
-params: {product: string, qty: integer}
-start_url: http://localhost:8001/shop
+task: Buy $qty of $product and check out as $name, $address
+start_url: http://localhost:8765/
+params:
+  product: {type: string, example: Blue Mug}
+  qty: {type: integer, example: 2}
+  name: {type: string, example: Ada Lovelace}
+  address: {type: string, example: 1 Main St}
+
 steps:
   - id: s1
-    intent: "Dismiss the cookie banner if it is shown"
-    when: {exists: {role: button, name: "Accept all"}}
+    intent: Dismiss the cookie banner if one is shown
+    when: {exists: {role: button, name: Accept all}}
     action: {type: click}
     target:
       locators:
-        - {role: button, name: "Accept all"}
-    risk: read
+        - {role: button, name: Accept all}
 
   - id: s2
-    intent: "Search for the product"
-    action: {type: fill, value: "$product"}
+    intent: Open the product page for $product
+    action: {type: click}
     target:
       locators:
-        - {testid: search-input}
-        - {role: searchbox, name: Search}
-        - {css: "input[name=q]"}
-      fingerprint: {role: searchbox, name: Search, near: header}
-    pre: [{url_matches: "^/shop"}, {unique: target}]
-    post: [{url_matches: "^/search"}]
-    risk: read
+        - {role: link, name: $product, exact: true}
+        - {text: $product, exact: true}
+        - {xpath: '/html/body/main/ul/li[1]/a'}   # recorded for Blue Mug only; the post-check catches a wrong item
+      fingerprint:
+        tag: a
+        role: link
+        name: Blue Mug
+        attributes: {href: 'product.html?id=blue-mug'}
+        xpath: '/html/body/main/ul/li[1]/a'
+    pre:
+      - {url_matches: '/(index\.html)?(\?.*)?$'}
+      - {target_unique: true}
+    post:
+      - {url_matches: '/product\.html'}
+      - {text_visible: $product}
 
   - id: s3
-    intent: "Open the product page"
-    action: {type: click}
+    intent: Set the quantity to $qty
+    action: {type: fill, value: $qty}
     target:
       locators:
-        - {role: link, name: "$product"}
-        - {css: "a.product-card"}
-      fingerprint: {role: link, near: "search results"}
-    pre: [{url_matches: "^/search"}]
-    post: [{url_matches: "^/p/"}]
-    risk: read
+        - {label: Quantity, exact: true}
+        - {role: spinbutton, name: Quantity}
+        - {css: '#qty'}
+        - {xpath: /html/body/main/input}
+      fingerprint:
+        tag: input
+        role: spinbutton
+        name: Quantity
+        attributes: {id: qty, name: qty, type: number}
+        xpath: /html/body/main/input
+    pre:
+      - {url_matches: '/product\.html'}
+      - {target_unique: true}
+    post:
+      - {target_value: $qty}
 
   - id: s4
-    intent: "Set the quantity"
-    action: {type: fill, value: "$qty"}
-    target:
-      locators:
-        - {testid: qty}
-        - {role: spinbutton, name: Quantity}
-      fingerprint: {role: spinbutton, name: Quantity, near: "price"}
-    pre: [{url_matches: "^/p/"}, {unique: target}]
-    post: [{value_equals: "$qty"}]
-    risk: read
-
-  - id: s5
-    intent: "Click 'Add to cart' for the selected product"
+    intent: Add the product to the cart
     action: {type: click}
     target:
       locators:
-        - {testid: add-to-cart}
-        - {role: button, name: "Add to cart"}
-        - {css: "button.add"}
-      fingerprint: {role: button, name: "Add to cart", near: "price"}
-    pre: [{url_matches: "^/p/"}, {unique: target}, {enabled: target}]
-    post: [{text_visible: "Added to your cart"}]
-    risk: write
+        - {role: button, name: Add to cart}
+        - {css: '#add'}
+        - {xpath: /html/body/main/button}
+      fingerprint:
+        tag: button
+        role: button
+        name: Add to cart
+        attributes: {id: add, type: button}
+        xpath: /html/body/main/button
+    pre:
+      - {target_unique: true}
+      - {target_enabled: true}
+    post:
+      - {url_matches: '/checkout\.html'}
+      - {text_visible: $qty × $product}
+
+  - id: s5
+    intent: Enter the customer's full name
+    action: {type: fill, value: $name}
+    target:
+      locators:
+        - {label: Full name, exact: true}
+        - {css: '#name'}
+        - {xpath: '/html/body/main/form/input[1]'}
+      fingerprint:
+        tag: input
+        role: textbox
+        name: Full name
+        attributes: {id: name, name: name}
+        xpath: '/html/body/main/form/input[1]'
+    pre:
+      - {url_matches: '/checkout\.html'}
+      - {target_unique: true}
+    post:
+      - {target_value: $name}
 
   - id: s6
-    intent: "Check the cart contents"
-    action: {type: goto, url: /cart}
-    pre: []
-    post: [{text_visible: "$qty × $product"}]
-    risk: read
+    intent: Enter the shipping address
+    action: {type: fill, value: $address}
+    target:
+      locators:
+        - {label: Address, exact: true}
+        - {css: '#address'}
+        - {xpath: '/html/body/main/form/input[2]'}
+      fingerprint:
+        tag: input
+        role: textbox
+        name: Address
+        attributes: {id: address, name: address}
+        xpath: '/html/body/main/form/input[2]'
+    pre:
+      - {target_unique: true}
+    post:
+      - {target_value: $address}
 
-success: [{text_visible: "$qty × $product"}]
-history: []
+  - id: s7
+    intent: Place the order
+    action: {type: click}
+    target:
+      locators:
+        - {role: button, name: Place order}
+        - {css: '#checkout-form button[type=submit]'}
+        - {xpath: /html/body/main/form/button}
+      fingerprint:
+        tag: button
+        role: button
+        name: Place order
+        attributes: {type: submit}
+        xpath: /html/body/main/form/button
+    pre:
+      - {target_unique: true}
+      - {target_enabled: true}
+    post:
+      - {url_matches: '/done\.html'}
+
+success:
+  - text_visible: 'Order confirmed: $qty × $product'
+
+history:
+  - version: 1
+    source: manual
+    reason: Hand-written reference from the smoke recording in runs/smoke
+    at: 2026-10-17T14:30:00Z

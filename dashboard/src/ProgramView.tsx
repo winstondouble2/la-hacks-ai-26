@@ -21,20 +21,29 @@ const STATUS_STYLE: Record<Status, string> = {
 }
 
 export default function ProgramView({ program, events }: { program: Program; events: RunEvent[] }) {
-  const healedHere = new Map(program.history.filter((h) => h.version === program.version).map((h) => [h.step, h]))
+  const healedHere = new Map(
+    (program.history ?? [])
+      .filter((h) => h.source === 'healed' && h.version === program.version && h.step)
+      .map((h) => [h.step!, h]),
+  )
   return (
     <div className="flex flex-col gap-5">
-      <div className="flex flex-wrap gap-x-6 gap-y-1 font-mono text-[13px] text-muted">
+      <div className="flex flex-col gap-1.5 font-mono text-[13px] text-muted">
         <span>
-          params{' '}
-          <span className="text-ink">
-            {Object.entries(program.params)
-              .map(([k, t]) => `$${k}: ${t}`)
-              .join(', ')}
-          </span>
+          task <span className="text-ink">{program.task}</span>
         </span>
-        <span>
-          start <span className="text-ink">{program.start_url}</span>
+        <span className="flex flex-wrap gap-x-6 gap-y-1">
+          <span>
+            params{' '}
+            <span className="text-ink">
+              {Object.entries(program.params ?? {})
+                .map(([k, p]) => `$${k}: ${p.type}${p.example !== undefined ? ` (${p.example})` : ''}`)
+                .join(', ')}
+            </span>
+          </span>
+          <span>
+            start <span className="text-ink">{program.start_url}</span>
+          </span>
         </span>
       </div>
       <ol className="flex flex-col border-t-[1.5px] border-ink">
@@ -58,11 +67,6 @@ export default function ProgramView({ program, events }: { program: Program; eve
                   {step.when && (
                     <span className="rounded-full border border-ink px-2 py-0.5 font-mono text-xs">
                       only if {describeCheck(step.when)}
-                    </span>
-                  )}
-                  {step.risk === 'write' && (
-                    <span className="rounded-full bg-ink px-2 py-0.5 font-mono text-[11px] uppercase tracking-wider text-chart">
-                      write
                     </span>
                   )}
                 </div>
@@ -112,7 +116,7 @@ export default function ProgramView({ program, events }: { program: Program; eve
         })}
       </ol>
       <div className="font-mono text-[13px] text-muted">
-        success <span className="text-ink">{program.success.map(describeCheck).join(', ')}</span>
+        success <span className="text-ink">{(program.success ?? []).map(describeCheck).join(', ')}</span>
       </div>
     </div>
   )

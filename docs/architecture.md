@@ -81,36 +81,24 @@ The compiler is a few deterministic passes plus **one LLM pass**:
 
 ### Program format (owner: B)
 
-There is one YAML file per program version, under `programs/<name>/v<N>.yaml`. Every version is kept, so a rollback just points back to an older file. Here is an example *proposal*:
+**Frozen.** The format is defined in code in [`browseen/program.py`](../browseen/program.py), as Pydantic models that both the compiler and the runtime import. The reference example is [`programs/buy-item/v1.yaml`](../programs/buy-item/v1.yaml), for the mini-shop fixture. A JSON Schema for the dashboard's types is in `programs/program.schema.json` (`python -m browseen.program schema`). Change the format only through B.
 
-```yaml
-program: buy-item
-version: 2
-params: {product: string, qty: integer}
-start_url: http://localhost:8001/shop
-steps:
-  - id: s1
-    intent: "Dismiss the cookie banner if it is shown"
-    when: {exists: {role: button, name: "Accept all"}}      # optional-step branch
-    action: {type: click, target: {role: button, name: "Accept all"}}
+- **Files.** There is one YAML file per version, `programs/<name>/v<N>.yaml`. Versions are append-only (`save()` refuses to overwrite), so a rollback just means loading an older file.
+- **Validation.** `python -m browseen.program validate <file>` checks a file. Unknown keys are rejected.
 
-  - id: s2
-    intent: "Search for the product"
-    action: {type: fill, value: "$product"}
-    target:
-      locators:                                               # tried in order
-        - {testid: search-input}
-        - {role: searchbox, name: Search}
-        - {css: "input[name=q]"}
-        - {xpath: "/html/body/header/form/input"}
-      fingerprint: {role: searchbox, name: Search, near: header}
-    pre:  [{url_matches: "^/shop"}, {unique: target}]
-    post: [{url_matches: "^/search"}]
-  # … s3 to s9
-success: [{text_visible: "Order confirmed"}]
-history:
-  - {version: 2, step: s5, tier: 2, reason: "'Add to cart' renamed to 'Add to bag'"}
-```
+| Piece | Fields | Notes |
+|---|---|---|
+| Program | `program`, `version`, `task`, `start_url`, `params`, `steps`, `success`, `history` | `success` is a list of checks for the whole task |
+| Step | `id` (`s1`, `s2`, `s4a`, …), `intent`, `action`, `target`, `when`, `pre`, `post`, `timeout_ms` | `target` sits at **step** level. It's required except for `navigate` and `press`. |
+| Action | `type` (navigate, click, fill, select, check, uncheck, press, extract) plus `value`, `url`, `key` or `into` | `fill` and `select` need `value`, `navigate` needs `url` |
+| Target | `locators` (tried in order), `fingerprint` | The fingerprint is the recorded element, which tier 1 fuzzy-matches against |
+| Locator | exactly one of `testid`, `role` (+ `name`, `exact`), `label`, `placeholder`, `text`, `css`, `xpath` | `Locator.to_playwright(page)` is the one shared mapping to Playwright. `xpath` must start with `/`. |
+| Check | exactly one of `url_matches` (a regex), `text_visible`, `exists`, `absent`, `target_unique`, `target_enabled`, `target_value` | `target_*` checks refer to the step's own target |
+| Change | `version`, `source` (recorded, compiled, healed, manual), `step`, `tier`, `reason`, `at` | History; `Program.bump(...)` appends one |
+
+- **Optional steps.** If a step's `when` check fails, the step is skipped. Evaluate `when` with a short timeout (the dry run used 500 ms).
+- **Parameters.** `$name` can appear in any string: values, URLs, check text, locator names such as `{role: link, name: $product}`. `$$` is a literal `$`. The runtime calls `program.resolved(params)` once per run.
+- **Healing.** `program.bump(source="healed", step=…, tier=…, reason=…)` returns the next version. Edit the copy, then `save()` it.
 
 ### Runtime (A)
 
