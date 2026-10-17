@@ -3,14 +3,20 @@ import DiffView from './DiffView'
 import { loadEvents, type EventType, type RunEvent } from './events'
 import ProgramView from './ProgramView'
 import { loadVersions, type Program } from './programs'
+import RaceView from './RaceView'
+import { durationMs, totalsAt, useReplay, type Totals } from './replay'
 
 const SENTRY_ORG_URL = 'https://la-hacksss.sentry.io'
 
 // Run id comes from ?run=<id>; the fake stream lives in runs/sample/.
-const runId = new URLSearchParams(location.search).get('run') ?? 'sample'
+// ?baseline=<id> is the first (agent) run of the same task, for the side-by-side.
+const params = new URLSearchParams(location.search)
+const runId = params.get('run') ?? 'sample'
+const baselineId = params.get('baseline') ?? (runId === 'sample' ? 'sample-agent' : null)
 
 const VIEWS = {
   events: { tab: 'Events', title: 'Every step, seen.' },
+  race: { tab: 'Side by side', title: 'Slow once. Instant after.' },
   program: { tab: 'Program', title: 'The compiled program.' },
   diff: { tab: 'Diff', title: 'Only what broke changed.' },
 } as const
@@ -23,13 +29,20 @@ function initialView(): View {
 
 export default function App() {
   const [events, setEvents] = useState<RunEvent[]>([])
+  const [baseline, setBaseline] = useState<RunEvent[]>([])
   const [versions, setVersions] = useState<Program[]>([])
   const [error, setError] = useState<string | null>(null)
   const [view, setView] = useState<View>(initialView)
 
   useEffect(() => {
     loadEvents(runId).then(setEvents, (e: Error) => setError(e.message))
+    // The side-by-side is optional: without a baseline run, its column stays empty.
+    if (baselineId) loadEvents(baselineId).then(setBaseline, () => setBaseline([]))
   }, [])
+
+  const replay = useReplay(Math.max(durationMs(events), durationMs(baseline)))
+  const compiledNow = totalsAt(events, replay.elapsed)
+  const baselineNow = baseline.length ? totalsAt(baseline, replay.elapsed) : null
 
   const first = events[0]
 
@@ -48,7 +61,7 @@ export default function App() {
   const healed = events.some((e) => e.type === 'healed')
 
   // Hand-made data must never pass for a real run, in the demo or at 4am.
-  const sampleRun = runId === 'sample'
+  const sampleRun = runId === 'sample' || !!baselineId?.startsWith('sample')
   const examplePrograms = versions.filter((p) => p.history?.some((h) => h.reason?.startsWith('EXAMPLE')))
 
   return (
@@ -60,7 +73,15 @@ export default function App() {
       <main className="flex flex-1 flex-col lg:flex-row">
         <aside className="flex flex-col justify-between gap-12 border-ink px-6 py-10 lg:w-[560px] lg:shrink-0 lg:border-r-[1.5px] lg:px-10 lg:pt-12">
           <Wordmark />
-          {finished && <Summary finished={finished} />}
+          {first && (
+            <Summary
+              compiled={compiledNow}
+              baseline={baselineNow}
+              version={finished?.version ?? first.version}
+              playing={replay.playing}
+              onReplay={replay.play}
+            />
+          )}
         </aside>
         <section className="flex min-w-0 flex-1 flex-col gap-6 px-6 py-10 lg:px-12 lg:pt-12">
           <header className="flex flex-wrap items-end justify-between gap-4">
@@ -79,6 +100,8 @@ export default function App() {
             <p className="text-fail">{error}</p>
           ) : view === 'events' ? (
             <EventList events={events} />
+          ) : view === 'race' ? (
+            <RaceView baseline={baseline} compiled={events} elapsed={replay.elapsed} />
           ) : !versions.length ? (
             <p className="text-muted">Loading program…</p>
           ) : view === 'program' ? (
@@ -96,7 +119,7 @@ export default function App() {
 
 function SampleBanner({ sampleRun, exampleVersions }: { sampleRun: boolean; exampleVersions: number[] }) {
   const parts = [
-    sampleRun && 'this run is hand-written sample data (runs/sample)',
+    sampleRun && 'these runs are hand-written sample data (runs/sample, runs/sample-agent)',
     exampleVersions.length > 0 && `program ${exampleVersions.map((v) => `v${v}`).join(', ')} is an example`,
   ].filter(Boolean)
   return (
@@ -200,29 +223,67 @@ function EyeIcon({ className }: { className?: string }) {
   )
 }
 
-function Summary({ finished }: { finished: RunEvent }) {
-  // The first-run (agent) column needs a baseline run in the stream; until A
-  // emits one, it shows a dash instead of made-up numbers.
-  const rows: [string, string][] = [
-    ['Time', `${finished.seconds?.toFixed(1) ?? '—'} s`],
-    ['Tokens', finished.tokens.toLocaleString()],
-    ['Cost', `$${finished.usd.toFixed(3)}`],
-    ['LLM calls', String(finished.llm_calls)],
+function Summary({
+  compiled,
+  baseline,
+  version,
+  playing,
+  onReplay,
+}: {
+  compiled: Totals
+  baseline: Totals | null
+  version: number
+  playing: boolean
+  onReplay: () => void
+}) {
+  const fmt: [string, (t: Totals) => string][] = [
+    ['Time', (t) => `${t.seconds.toFixed(1)} s`],
+    ['Tokens', (t) => t.tokens.toLocaleString()],
+    ['Cost', (t) => `$${t.usd.toFixed(3)}`],
+    ['LLM calls', (t) => String(t.llmCalls)],
   ]
+  const ratio = baseline?.finished && compiled.finished && compiled.seconds > 0 ? baseline.seconds / compiled.seconds : null
   return (
-    <div className="flex flex-col border-t-[1.5px] border-ink">
-      <div className="flex py-2.5 text-xs font-medium uppercase tracking-[0.12em] text-muted">
-        <span className="w-24 shrink-0 sm:w-40" />
-        <span className="flex-1 text-right">First run · agent</span>
-        <span className="flex-1 text-right text-ink">Compiled · v{finished.version}</span>
-      </div>
-      {rows.map(([label, value]) => (
-        <div key={label} className="flex items-baseline border-t border-rule py-3 font-mono text-[15px]">
-          <span className="w-24 shrink-0 font-sans text-muted sm:w-40">{label}</span>
-          <span className="flex-1 text-right text-muted">—</span>
-          <span className="flex-1 text-right text-[22px] font-bold">{value}</span>
+    <div className="flex flex-col gap-7">
+      <div className="flex min-h-[80px] items-end gap-4">
+        {ratio && (
+          <span className="font-display condensed text-[96px] leading-[80px] font-extrabold tracking-[-0.04em] tabular-nums">
+            {Math.round(ratio)}×
+          </span>
+        )}
+        <div className="flex flex-col items-start gap-2 pb-1">
+          <span className="text-[17px] leading-6">
+            {ratio ? 'faster than the first run.' : baseline ? 'Replaying both runs…' : 'Replaying the run…'}
+            {ratio && (
+              <>
+                <br />
+                {compiled.llmCalls} LLM call{compiled.llmCalls === 1 ? '' : 's'} on replay vs {baseline!.llmCalls}.
+              </>
+            )}
+          </span>
+          <button
+            onClick={onReplay}
+            disabled={playing}
+            className="rounded-full border-[1.5px] border-ink px-3 py-1 text-[13px] font-medium enabled:hover:bg-ink enabled:hover:text-chart disabled:opacity-40"
+          >
+            ↻ Replay
+          </button>
         </div>
-      ))}
+      </div>
+      <div className="flex flex-col border-t-[1.5px] border-ink">
+        <div className="flex py-2.5 text-xs font-medium uppercase tracking-[0.12em] text-muted">
+          <span className="w-24 shrink-0 sm:w-40" />
+          <span className="flex-1 text-right">First run · agent</span>
+          <span className="flex-1 text-right text-ink">Compiled · v{version}</span>
+        </div>
+        {fmt.map(([label, show]) => (
+          <div key={label} className="flex items-baseline border-t border-rule py-3 font-mono text-[15px] tabular-nums">
+            <span className="w-24 shrink-0 font-sans text-muted sm:w-40">{label}</span>
+            <span className="flex-1 text-right text-muted">{baseline ? show(baseline) : '—'}</span>
+            <span className="flex-1 text-right text-[22px] font-bold">{show(compiled)}</span>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
