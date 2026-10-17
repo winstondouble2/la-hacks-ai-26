@@ -89,7 +89,45 @@ Prices are in `browseen/costs.py`.
 
 ### Compiler (B)
 
-The compiler is a few deterministic passes plus **one LLM pass**:
+**v0 is built**, with no LLM yet, in `browseen/compiler/`:
+
+```bash
+python -m browseen.compiler runs/<run_id> --name mini-shop
+```
+
+That writes `programs/mini-shop/v1.yaml` and prints a compile report: each trace action is kept (and which step it became), dropped (with the reason) or unsupported, plus each locator candidate with ✓/✗. Add `--dry-run` to print the program without saving. The compiler refuses to write into an existing program folder.
+
+Compiled from the mini-shop recording, the program replays with Blue Mug ×2 and with Red Kettle ×1, with 0 LLM calls.
+
+**Normalize:**
+
+- *Mapped:* `click` → click, `input` → fill, `select_dropdown` → select, `send_keys` → press, later `navigate` → navigate.
+- *Dropped, with a reason:* the step-0 navigation, `done`, `wait`, `scroll`, read-only tools, failed actions, an input superseded by a later input into the same field, and a single click that changed nothing.
+- *Not handled in v0:* `extract`, and *unsupported* `go_back`, `upload_file`, tab switching and `evaluate`.
+
+**Locators.** Each saved page is loaded with scripts stripped and JavaScript off, so it's exactly the recorded DOM.
+
+- The element's real role and accessible name come from Playwright's `aria_snapshot()`.
+- Candidates are tried in this order: `data-testid`, then for form fields `label` and then role + name, for everything else role + name and then `text`, then `placeholder`, then a stable CSS selector (`#id` or `[name]`), then the XPath.
+- A candidate is kept **only if it matches exactly one element and that element is the recorded one.**
+
+**Parameters.** Recorded input values become `$params`, with the longest values replaced first. Short values such as `2` are replaced only as whole words, and literal `$` becomes `$$`. This applies to values, locator names and check text, but never to CSS or XPath.
+
+**Checks:**
+
+- Pre-checks: the page path, the target is unique, and the target is enabled (for clicks).
+- Post-checks: the field's value (for fill and select), the new page path, and the shortest text line on the new page that names an input (for example `$qty × $product`). That last one catches a wrong-item click.
+- Success check: a heading or text line on the final page that names an input.
+
+**v0 limits:**
+
+- Intents are templates (`Click 'Add to cart'`).
+- There are no optional-step branches yet.
+- The CSS and XPath fallbacks for parameter-dependent elements still point at the recorded item. The post-checks catch that.
+
+The LLM pass (role-plan step 5) adds clean intents and optional steps.
+
+The full design, including the LLM pass:
 
 1. **Normalize.** Drop failed or no-op actions, collapse mis-click-then-correct sequences, and merge consecutive typing into one action.
 2. **Parameterize.** Literals that came from the task inputs become `$params`. The LLM pass names them and gives each a type.

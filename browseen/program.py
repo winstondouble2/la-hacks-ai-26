@@ -58,12 +58,12 @@ class Locator(_Model):
     testid: str | None = None
     role: str | None = None
     name: str | None = None
-    exact: bool | None = None
     label: str | None = None
     placeholder: str | None = None
     text: str | None = None
     css: str | None = None
     xpath: str | None = None
+    exact: bool | None = None
 
     @model_validator(mode="after")
     def _check(self) -> Locator:
@@ -296,9 +296,9 @@ def _substitute(obj: Any, values: dict[str, str]) -> Any:
 
 
 def _drop_empty(obj: Any) -> Any:
-    """Leave empty lists and dicts out of the YAML, so files stay short."""
+    """Leave empty lists, dicts and strings out of the YAML, so files stay short."""
     if isinstance(obj, dict):
-        return {k: _drop_empty(v) for k, v in obj.items() if v not in ([], {})}
+        return {k: _drop_empty(v) for k, v in obj.items() if v not in ([], {}, "")}
     if isinstance(obj, list):
         return [_drop_empty(v) for v in obj]
     return obj

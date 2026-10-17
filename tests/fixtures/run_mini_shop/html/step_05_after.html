@@ -1,0 +1,21 @@
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <title>Order confirmed · Mini Shop</title>
+</head>
+<body>
+  <header><a href="index.html">Mini Shop</a></header>
+  <main>
+    <h1 id="status">Order confirmed: 2 × Blue Mug</h1>
+    <p id="details">Shipping to Ada Lovelace, 1 Main St</p>
+  </main>
+  <script>
+    const order = JSON.parse(localStorage.getItem("lastOrder") || "null");
+    if (order && order.items.length) {
+      const items = order.items.map((i) => `${i.qty} × ${i.name}`).join(", ");
+      document.getElementById("status").textContent = `Order confirmed: ${items}`;
+      document.getElementById("details").textContent = `Shipping to ${order.name}, ${order.address}`;
+    }
+  </script>
+
+
+</body></html>
