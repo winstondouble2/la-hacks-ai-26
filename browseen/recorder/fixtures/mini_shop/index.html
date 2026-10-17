@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Mini Shop</title>
+  <script src="shop.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Mini Shop</h1>
+    <form id="search-form" role="search">
+      <label for="q">Search</label>
+      <input id="q" name="q" type="search" data-testid="search-input">
+      <button type="submit">Search</button>
+    </form>
+  </header>
+  <main>
+    <h2 id="results-title">All products</h2>
+    <ul id="products"></ul>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const q = (params.get("q") || "").trim().toLowerCase();
+    document.getElementById("q").value = params.get("q") || "";
+    if (q) document.getElementById("results-title").textContent = `Results for "${params.get("q")}"`;
+    const list = document.getElementById("products");
+    PRODUCTS.filter((p) => !q || p.name.toLowerCase().includes(q)).forEach((p) => {
+      const li = document.createElement("li");
+      li.innerHTML = `<a href="product.html?id=${p.id}">${p.name}</a> — $${p.price}`;
+      list.appendChild(li);
+    });
+    if (!list.children.length) list.innerHTML = "<li>No products found</li>";
+  </script>
+</body>
+</html>

@@ -1,2 +1,6 @@
 sentry-sdk>=2.35
 python-dotenv>=1.0
+browser-use==0.13.11
+playwright==1.64.0
+pyyaml>=6.0
+pytest>=8.0

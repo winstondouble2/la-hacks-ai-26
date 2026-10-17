@@ -7,7 +7,7 @@ Who builds what, and what each person hands to the others. The design is in [arc
 | Role | Owns | Code | Interfaces owned | Who |
 |---|---|---|---|---|
 | **A: Runtime + healer** | Compiled replay on Playwright, guard checks, the three healing tiers, versioning and rollback | `browseen/runtime/`, `browseen/healer/`, `browseen/api.py` (with D) | Event stream; run API (with D) | _fill in_ |
-| **B: Recorder + compiler** | Recording the Browser Use run, compiling it into a program, the CLI | `browseen/recorder/`, `browseen/compiler/`, `browseen/__main__.py`, `programs/` | Trace format; **program YAML** | _fill in_ |
+| **B: Recorder + compiler** | Recording the Browser Use run, compiling it into a program, the CLI | `browseen/program.py`, `browseen/recorder/`, `browseen/compiler/`, `browseen/__main__.py`, `programs/` | Trace format; **program YAML** (frozen in `browseen/program.py`) | _fill in_ |
 | **C: Testbed + benchmark** | The test sites with page-change switches, the benchmark harness and runs | `testbed/`, `bench/` | Testbed contract; mutation list; task definitions | _fill in_ |
 | **D: Dashboard + Sentry + story** | The demo dashboard, Sentry, README, Devpost, the pitch and the video | `dashboard/`, `browseen/observability.py`, `browseen/tracing.py`, `docs/sentry.md`, `README.md` | Run API (with A) | _fill in_ |
 
@@ -78,7 +78,7 @@ Nobody should be blocked on another person. Work against a mock until the real p
 | Dependency | From → to | Mock until then |
 |---|---|---|
 | Shop site with the demo task | C → A, B | A: a saved HTML copy of a simple page. B: record a Browser Use run on any simple site to learn the history format. |
-| Program YAML schema + example file | B → A, D | The example in [architecture.md](architecture.md#program-format-owner-b), hand-written as `programs/buy-item/v1.yaml` |
+| Program YAML schema + example file | B → A, D | **Done:** `browseen/program.py` and `programs/buy-item/v1.yaml` (runs on the mini-shop fixture) |
 | A compiled program from a real recording | B → A | The hand-written v1 |
 | Event stream | A → D | A fake `runs/sample/events.jsonl`, written from the proposal in [architecture.md](architecture.md#event-stream-proposal-for-a) |
 | Run API | A + D | D's dashboard reads the fake stream; A calls functions directly |

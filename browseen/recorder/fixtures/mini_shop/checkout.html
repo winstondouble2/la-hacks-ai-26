@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Checkout · Mini Shop</title>
+  <script src="shop.js"></script>
+</head>
+<body>
+  <header><a href="index.html">Mini Shop</a></header>
+  <main>
+    <h1>Checkout</h1>
+    <ul id="cart"></ul>
+    <form id="checkout-form">
+      <label for="name">Full name</label>
+      <input id="name" name="name" required>
+      <label for="address">Address</label>
+      <input id="address" name="address" required>
+      <button type="submit">Place order</button>
+    </form>
+  </main>
+  <script>
+    const cart = getCart();
+    const list = document.getElementById("cart");
+    cart.forEach((item) => {
+      const li = document.createElement("li");
+      li.textContent = `${item.qty} × ${item.name}`;
+      list.appendChild(li);
+    });
+    if (!cart.length) list.innerHTML = "<li>Your cart is empty</li>";
+    document.getElementById("checkout-form").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const order = {
+        items: cart,
+        name: document.getElementById("name").value,
+        address: document.getElementById("address").value,
+      };
+      localStorage.setItem("lastOrder", JSON.stringify(order));
+      setCart([]);
+      location.href = "done.html";
+    });
+  </script>
+</body>
+</html>
