@@ -4,18 +4,17 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { defineConfig, type Plugin } from 'vite'
 
-const RUNS_DIR = resolve(import.meta.dirname, '../runs')
-
-// Serves the repo's runs/ folder at /runs, so the dashboard can read
-// runs/<id>/events.jsonl before A's API exists.
-function serveRuns(): Plugin {
+// Serves a repo folder (runs/, programs/) at /<name>, so the dashboard can read
+// runs/<id>/events.jsonl and programs/<name>/v<N>.yaml before A's API exists.
+function serveRepoDir(name: string, contentType: string): Plugin {
+  const dir = resolve(import.meta.dirname, '..', name)
   return {
-    name: 'serve-runs',
+    name: `serve-${name}`,
     configureServer(server) {
-      server.middlewares.use('/runs', (req, res, next) => {
-        const file = resolve(RUNS_DIR, '.' + decodeURIComponent(req.url ?? '/').split('?')[0])
-        if (!file.startsWith(RUNS_DIR + sep) || !existsSync(file) || !statSync(file).isFile()) return next()
-        res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8')
+      server.middlewares.use(`/${name}`, (req, res, next) => {
+        const file = resolve(dir, '.' + decodeURIComponent(req.url ?? '/').split('?')[0])
+        if (!file.startsWith(dir + sep) || !existsSync(file) || !statSync(file).isFile()) return next()
+        res.setHeader('Content-Type', `${contentType}; charset=utf-8`)
         createReadStream(file).pipe(res)
       })
     },
@@ -23,5 +22,10 @@ function serveRuns(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), serveRuns()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    serveRepoDir('runs', 'application/x-ndjson'),
+    serveRepoDir('programs', 'text/yaml'),
+  ],
 })

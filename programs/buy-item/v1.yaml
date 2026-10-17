@@ -1,0 +1,75 @@
+# EXAMPLE, hand-written by D from the proposal in docs/architecture.md.
+# B owns this format; replace with the compiler's real output once the schema is frozen.
+program: buy-item
+version: 1
+params: {product: string, qty: integer}
+start_url: http://localhost:8001/shop
+steps:
+  - id: s1
+    intent: "Dismiss the cookie banner if it is shown"
+    when: {exists: {role: button, name: "Accept all"}}
+    action: {type: click}
+    target:
+      locators:
+        - {role: button, name: "Accept all"}
+    risk: read
+
+  - id: s2
+    intent: "Search for the product"
+    action: {type: fill, value: "$product"}
+    target:
+      locators:
+        - {testid: search-input}
+        - {role: searchbox, name: Search}
+        - {css: "input[name=q]"}
+      fingerprint: {role: searchbox, name: Search, near: header}
+    pre: [{url_matches: "^/shop"}, {unique: target}]
+    post: [{url_matches: "^/search"}]
+    risk: read
+
+  - id: s3
+    intent: "Open the product page"
+    action: {type: click}
+    target:
+      locators:
+        - {role: link, name: "$product"}
+        - {css: "a.product-card"}
+      fingerprint: {role: link, near: "search results"}
+    pre: [{url_matches: "^/search"}]
+    post: [{url_matches: "^/p/"}]
+    risk: read
+
+  - id: s4
+    intent: "Set the quantity"
+    action: {type: fill, value: "$qty"}
+    target:
+      locators:
+        - {testid: qty}
+        - {role: spinbutton, name: Quantity}
+      fingerprint: {role: spinbutton, name: Quantity, near: "price"}
+    pre: [{url_matches: "^/p/"}, {unique: target}]
+    post: [{value_equals: "$qty"}]
+    risk: read
+
+  - id: s5
+    intent: "Click 'Add to cart' for the selected product"
+    action: {type: click}
+    target:
+      locators:
+        - {testid: add-to-cart}
+        - {role: button, name: "Add to cart"}
+        - {css: "button.add"}
+      fingerprint: {role: button, name: "Add to cart", near: "price"}
+    pre: [{url_matches: "^/p/"}, {unique: target}, {enabled: target}]
+    post: [{text_visible: "Added to your cart"}]
+    risk: write
+
+  - id: s6
+    intent: "Check the cart contents"
+    action: {type: goto, url: /cart}
+    pre: []
+    post: [{text_visible: "$qty × $product"}]
+    risk: read
+
+success: [{text_visible: "$qty × $product"}]
+history: []
