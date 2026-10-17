@@ -25,7 +25,7 @@ AGENTS.md
 temp/
 tmp/
 runs/*
-!runs/sample/
+!runs/sample*/
 artifacts/
 recordings/
 *.har

@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { stringify } from 'yaml'
-import type { Program, Step } from './programs'
+import { API_MODE, rollback } from './api'
+import type { RunEvent } from './events'
+import { describeLocator, type Change, type Program, type Step } from './programs'
 
 // Hand-written and compiler-written files order keys differently and may omit
 // defaults, so steps are put in one canonical shape before comparing:
@@ -35,9 +37,33 @@ function stepYaml(step: Step | undefined): string[] {
   return step ? stringify(canonical(step), { lineWidth: 0 }).trimEnd().split('\n') : []
 }
 
-export default function DiffView({ versions }: { versions: Program[] }) {
+export default function DiffView({
+  versions,
+  events,
+  onRolledBack,
+}: {
+  versions: Program[]
+  events: RunEvent[]
+  onRolledBack: (p: Program) => void
+}) {
   const [from, setFrom] = useState(Math.max(0, versions.length - 2))
   const [to, setTo] = useState(versions.length - 1)
+  const [rollbackTo, setRollbackTo] = useState(versions[0].version)
+  const [rb, setRb] = useState<{ state: 'idle' | 'pending' | 'done' | 'error'; text?: string }>({ state: 'idle' })
+  const latest = versions[versions.length - 1]
+
+  async function doRollback() {
+    setRb({ state: 'pending' })
+    try {
+      const p = await rollback(latest.program, rollbackTo, versions)
+      setRb({ state: 'done', text: `Saved v${p.version} as a copy of v${rollbackTo}${API_MODE === 'mock' ? ' (mock: in this browser only)' : ''}.` })
+      onRolledBack(p)
+      setFrom(versions.length - 1)
+      setTo(versions.length)
+    } catch (e) {
+      setRb({ state: 'error', text: (e as Error).message })
+    }
+  }
   const a = versions[from]
   const b = versions[to]
 
@@ -56,6 +82,26 @@ export default function DiffView({ versions }: { versions: Program[] }) {
             {h.reason ? `, ${h.reason}` : ''}
           </span>
         ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="text-muted">Roll back to</span>
+        <select
+          value={rollbackTo}
+          onChange={(e) => setRollbackTo(Number(e.target.value))}
+          className="rounded-full border border-rule bg-chart px-2 py-0.5 font-mono"
+        >
+          {versions.filter((p) => p.version !== latest.version).map((p) => (
+            <option key={p.version} value={p.version}>v{p.version}</option>
+          ))}
+        </select>
+        <button
+          onClick={doRollback}
+          disabled={rb.state === 'pending' || versions.length < 2}
+          className="rounded-full border-[1.5px] border-ink px-3 py-0.5 font-medium hover:bg-[#f1f1f2] disabled:opacity-40"
+        >
+          {rb.state === 'pending' ? 'Rolling back…' : 'Roll back'}
+        </button>
+        {rb.text && <span className={rb.state === 'error' ? 'text-fail' : 'text-pass'}>{rb.text}</span>}
       </div>
       <ol className="flex flex-col border-t-[1.5px] border-ink">
         {ids.map((id) => {
@@ -78,6 +124,14 @@ export default function DiffView({ versions }: { versions: Program[] }) {
                 <span className="w-10 shrink-0 font-mono text-sm font-bold">{id}</span>
                 <span className="font-medium">{intent}</span>
               </div>
+              <ChangeSummary
+                id={id}
+                before={a.steps.find((s) => s.id === id)}
+                after={b.steps.find((s) => s.id === id)}
+                change={reasons.find((h) => h.step === id) ?? reasons.find((h) => h.version === b.version && !h.step)}
+                events={events}
+                toVersion={b.version}
+              />
               <div className="grid gap-3 md:grid-cols-2">
                 <YamlPane label={`v${a.version}`} lines={left} other={right} tone="old" />
                 <YamlPane label={`v${b.version}`} lines={right} other={left} tone="new" />
@@ -133,5 +187,43 @@ function YamlPane({ label, lines, other, tone }: { label: string; lines: string[
         })}
       </pre>
     </div>
+  )
+}
+
+// The repair in one glance: tier, reason, old and new target, and whether the run
+// that produced it reported the post-check passing.
+function ChangeSummary({
+  id,
+  before,
+  after,
+  change,
+  events,
+  toVersion,
+}: {
+  id: string
+  before?: Step
+  after?: Step
+  change?: Change
+  events: RunEvent[]
+  toVersion: number
+}) {
+  const loc = (s?: Step) => (s?.target ? describeLocator(s.target.locators[0]) : s ? s.action.type : 'absent')
+  const healed = events.find((e) => e.type === 'healed' && e.step === id && e.version === toVersion)
+  const verified = healed && /post-check passed/i.test(healed.detail)
+  return (
+    <dl className="grid gap-x-6 gap-y-1 pl-14 font-mono text-[13px] sm:grid-cols-[max-content_1fr]">
+      <dt className="text-muted">tier</dt>
+      <dd>{change?.tier ?? '—'}{change?.source && change.source !== 'healed' ? ` (${change.source})` : ''}</dd>
+      <dt className="text-muted">reason</dt>
+      <dd className="font-sans">{change?.reason || '—'}</dd>
+      <dt className="text-muted">before</dt>
+      <dd className="text-fail">{loc(before)}</dd>
+      <dt className="text-muted">after</dt>
+      <dd className="text-pass">{loc(after)}</dd>
+      <dt className="text-muted">verification</dt>
+      <dd className="font-sans">
+        {verified ? `Post-check passed in run ${healed.run_id}` : healed ? `Run ${healed.run_id} reported: ${healed.detail}` : 'No verification event for this change in the loaded run'}
+      </dd>
+    </dl>
   )
 }
