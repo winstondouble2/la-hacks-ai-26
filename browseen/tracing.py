@@ -1,6 +1,7 @@
 """Span helpers for the compiler. One transaction per run, one span per step.
 
 Names follow docs/architecture.md (Observability). Span data keys:
+  step.id          the program's step id (s1, s4a, …)
   mode             "llm" (recording run) | "compiled" (replay) | "healed" (step was repaired)
   program.version  version of the compiled program being run
   guard.result     "pass" | "fail"
@@ -27,14 +28,35 @@ def run_span(task: str, mode: str, program_version: int | None = None):
 
 
 @contextmanager
-def step_span(index: int, action: str, mode: str, target: str = ""):
-    with sentry_sdk.start_span(op="agent.step", name=f"{index}:{action}") as span:
+def step_span(index: int, action: str, mode: str, target: str = "", step_id: str | None = None):
+    """step_id is the program's id (s1, s4a, …); defaults to s<index+1>."""
+    step_id = step_id or f"s{index + 1}"
+    with sentry_sdk.start_span(op="agent.step", name=f"{step_id}:{action}") as span:
+        span.set_data("step.id", step_id)
         span.set_data("step.index", index)
         span.set_data("step.action", action)
         span.set_data("step.target", target)
         span.set_data("mode", mode)
         span.set_data("guard.result", "pass")
         yield span
+
+
+def log_check(span, step_id: str, check: str, passed: bool, detail: str = "") -> None:
+    """Record one guard decision: a Sentry log line (info on pass, warning on
+    fail) linked to the current trace, and guard.result=fail on the step span.
+
+    check is the check's short form, e.g. 'pre url_matches /product\\.html'.
+    """
+    if not passed:
+        span.set_data("guard.result", "fail")
+    log = sentry_sdk.logger.info if passed else sentry_sdk.logger.warning
+    log(
+        "check {result} {step_id}: {check} {detail}",
+        result="passed" if passed else "failed",
+        step_id=step_id,
+        check=check,
+        detail=detail,
+    )
 
 
 def mark_healed(span, reason: str, tier: int) -> None:

@@ -17,10 +17,13 @@ Helpers are in [browseen/tracing.py](../browseen/tracing.py): one transaction pe
 
 | Tag | On | Values |
 |---|---|---|
+| `step.id` | step | the program's step id (`s1`, `s4a`, …); also the span name prefix, e.g. `s4:click` |
 | `mode` | run and step | `llm` (recording run), `compiled` (replay), `healed` (step was repaired) |
 | `program.version` | run | version of the compiled program (absent for `llm` runs) |
 | `guard.result` | step | `pass`, or `fail` on a healed step |
 | `heal.tier` | step and run | `1` local, `2` one LLM patch, `3` scoped agent |
+
+**Logs, one per guard decision.** Call `log_check(span, step_id, check, passed, detail)` for every pre/post check: a pass is an info log, a fail is a warning and sets `guard.result=fail` on the step span. Logs carry the trace id, so they show up under the run's trace. Search Logs for `check failed` to see every failed guard.
 
 **AI agent monitoring.** Wrap an agent run (the first recording run, the tier-3 healer) in `agent_span(name, task)` and call `record_agent_result` with its output and token counts. It emits a `gen_ai.invoke_agent` span, which Sentry's AI Agents dashboard picks up; LLM calls inside it become children. Anthropic SDK calls are recorded automatically; `llm_span` (op `gen_ai.request`) is only for other clients. Try it: `python -m browseen --demo healed3`.
 
