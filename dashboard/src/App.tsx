@@ -1,20 +1,49 @@
 import { useEffect, useState } from 'react'
+import DiffView from './DiffView'
 import { loadEvents, type EventType, type RunEvent } from './events'
+import ProgramView from './ProgramView'
+import { loadVersions, type Program } from './programs'
 
 const SENTRY_ORG_URL = 'https://la-hacksss.sentry.io'
 
 // Run id comes from ?run=<id>; the fake stream lives in runs/sample/.
 const runId = new URLSearchParams(location.search).get('run') ?? 'sample'
 
+const VIEWS = {
+  events: { tab: 'Events', title: 'Every step, seen.' },
+  program: { tab: 'Program', title: 'The compiled program.' },
+  diff: { tab: 'Diff', title: 'Only what broke changed.' },
+} as const
+type View = keyof typeof VIEWS
+
+function initialView(): View {
+  const v = new URLSearchParams(location.search).get('view')
+  return v && v in VIEWS ? (v as View) : 'events'
+}
+
 export default function App() {
   const [events, setEvents] = useState<RunEvent[]>([])
+  const [versions, setVersions] = useState<Program[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [view, setView] = useState<View>(initialView)
 
   useEffect(() => {
     loadEvents(runId).then(setEvents, (e: Error) => setError(e.message))
   }, [])
 
   const first = events[0]
+
+  useEffect(() => {
+    if (first) loadVersions(first.program).then(setVersions, (e: Error) => setError(e.message))
+  }, [first])
+
+  function selectView(v: View) {
+    setView(v)
+    const url = new URL(location.href)
+    url.searchParams.set('view', v)
+    history.replaceState(null, '', url)
+  }
+
   const finished = events.find((e) => e.type === 'run_finished')
   const healed = events.some((e) => e.type === 'healed')
 
@@ -33,17 +62,46 @@ export default function App() {
                 {first ? `${first.program} · ${modeLabel(events)}` : 'Loading run'}
               </span>
               <h1 className="font-display text-[44px] font-extrabold leading-[44px] tracking-[-0.03em]">
-                Every step, seen.
+                {VIEWS[view].title}
               </h1>
             </div>
-            <Legend />
+            {view === 'events' ? <Legend /> : null}
           </header>
-          {error ? <p className="text-fail">{error}</p> : <EventList events={events} />}
+          <Tabs view={view} onChange={selectView} />
+          {error ? (
+            <p className="text-fail">{error}</p>
+          ) : view === 'events' ? (
+            <EventList events={events} />
+          ) : !versions.length ? (
+            <p className="text-muted">Loading program…</p>
+          ) : view === 'program' ? (
+            <ProgramView program={versions[versions.length - 1]} events={events} />
+          ) : (
+            <DiffView versions={versions} />
+          )}
           <div className="flex-1" />
           {first && <SentryFooter event={events.find((e) => e.type === 'healed') ?? first} />}
         </section>
       </main>
     </div>
+  )
+}
+
+function Tabs({ view, onChange }: { view: View; onChange: (v: View) => void }) {
+  return (
+    <nav className="-mb-2 flex gap-1 self-start rounded-full border-[1.5px] border-ink p-1 text-sm font-medium">
+      {(Object.keys(VIEWS) as View[]).map((v) => (
+        <button
+          key={v}
+          onClick={() => onChange(v)}
+          className={`rounded-full px-4 py-1.5 transition-colors ${
+            v === view ? 'bg-ink text-chart' : 'hover:bg-[#f1f1f2]'
+          }`}
+        >
+          {VIEWS[v].tab}
+        </button>
+      ))}
+    </nav>
   )
 }
 
