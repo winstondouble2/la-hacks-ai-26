@@ -59,11 +59,11 @@ This component wraps a Browser Use `Agent` and uses its step hooks (`on_step_sta
 **Built.** The code is in `browseen/recorder/`, and you run it like this:
 
 ```bash
-python -m browseen.recorder record 'Buy $qty of $product and check out as $name, $address' --url http://localhost:8765/ --input product="Blue Mug" --input qty=2 --input name="Ada Lovelace" --input address="1 Main St" --name buy-item
+python -m browseen record 'Buy $qty of $product and check out as $name, $address' --url http://localhost:8765/ --input product="Blue Mug" --input qty=2 --input name="Ada Lovelace" --input address="1 Main St" --name buy-item
 ```
 
 - **The task is a template plus inputs.** The agent gets the filled-in text, and the trace keeps both, so the compiler knows exactly which literals are parameters.
-- **Viewing a run:** `python -m browseen.recorder show runs/<run_id>` prints it without any API calls.
+- **Viewing a run:** `python -m browseen show runs/<run_id>` prints it without any API calls.
 - **On the mini shop,** a recording takes about 30 s and costs about $0.18 (6 LLM calls). The first call writes the prompt cache; later ones read it.
 
 Each run writes `runs/<run_id>/` (gitignored):
@@ -92,7 +92,7 @@ Prices are in `browseen/costs.py`.
 **Built** in `browseen/compiler/`: deterministic passes (v0) plus one LLM pass (v1).
 
 ```bash
-python -m browseen.compiler runs/<run_id> --name mini-shop
+python -m browseen compile runs/<run_id> --name mini-shop
 ```
 
 That writes `programs/mini-shop/v1.yaml` and prints a compile report: each trace action is kept (and which step it became), dropped (with the reason) or unsupported, plus each locator candidate with ✓/✗, and the LLM pass's tokens and cost. Add `--dry-run` to print the program without saving, or `--no-llm` for v0 only. The compiler refuses to write into an existing program folder.
@@ -257,15 +257,23 @@ These are the test sites we control (see [benchmark.md](benchmark.md#2-testbed-s
 
 ## CLI (B)
 
-Run commands as `python -m browseen <command>`. The entry point is `browseen/__main__.py`, which already has `--demo` for trying Sentry.
+**Built.** Run commands as `python -m browseen <command>`. The commands are in `browseen/cli.py`. The old forms `python -m browseen.recorder …` and `python -m browseen.compiler …` still work, and so does `python -m browseen --demo llm|compiled|healed|healed3` (the Sentry trace demo).
 
 | Command | Does |
 |---|---|
-| `record "<task>" --url <start>` | Run the agent once and save the trace |
-| `compile <trace>` | Trace → `programs/<name>/v1.yaml` |
-| `run <name> --param k=v` | Compiled run with automatic healing |
-| `diff <name> <a> <b>` | Show what changed between two versions |
-| `rollback <name> --to <v>` | Restore a version |
+| `record "<task with $params>" --url <start> --input k=v … [--name NAME] [--headless]` | Run the agent once and save the trace to `runs/<run_id>/` |
+| `show runs/<run_id>` | Print a recorded run, with no API calls |
+| `compile runs/<run_id> [--name NAME] [--no-llm] [--dry-run]` | Recorded run → `programs/<name>/v1.yaml` |
+| `run <name or file.yaml> --param k=v … [--version N] [--headless]` | Compiled run with automatic healing, via A's runtime (below). It first checks that every param is given, and lists the missing ones with examples. |
+| `diff <name> [a] [b]` | What changed between two versions: previous vs. latest, `a` vs. latest, or `a` vs. `b`. It compares the normalized YAML, so formatting differences don't show, and names the steps that were added, removed or changed. |
+| `rollback <name> --to <v>` | Saves the next version as a copy of `v`. Versions are append-only, so nothing is deleted, and the history records the rollback. |
+
+**The runtime hook (for A).** `run` calls `browseen.runtime.run_program(program, params, *, headless)`:
+
+- `program` is the loaded `Program` (the latest version, or the one asked for with `--version`);
+- `params` is the dict of typed inputs.
+
+It should return an object with a `success` attribute (or a plain bool), which sets the command's exit code. Until `browseen/runtime/` exists, `run` says that the runtime isn't on the branch yet. `tests/test_cli.py::test_run_calls_the_runtime_contract` pins down this contract.
 
 ## Tech stack
 

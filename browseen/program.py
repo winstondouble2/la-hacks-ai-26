@@ -13,6 +13,7 @@ Call Program.resolved(params) once per run to get a copy with them substituted.
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import re
 import sys
@@ -331,6 +332,39 @@ def latest(name: str, root: Path = PROGRAMS_DIR) -> Program:
     if not (found := versions(name, root)):
         raise FileNotFoundError(f"no versions of {name!r} under {root}")
     return load(program_path(name, found[-1], root))
+
+
+def rollback(name: str, to: int, root: Path = PROGRAMS_DIR) -> Program:
+    """Save the next version as a copy of v`to`. Versions are append-only, so nothing is deleted."""
+    current = latest(name, root)
+    if to not in versions(name, root):
+        raise FileNotFoundError(f"{name} has no v{to}; versions: {versions(name, root)}")
+    if to == current.version:
+        raise ValueError(f"v{to} is already the latest version of {name}")
+    new = load(program_path(name, to, root)).model_copy(deep=True)
+    new.version = current.version + 1
+    new.history = [*current.history, Change(version=new.version, source="manual", reason=f"rollback to v{to}",
+                                            at=datetime.now(timezone.utc).replace(microsecond=0))]
+    save(new, root)
+    return new
+
+
+def diff(a: Program, b: Program) -> str:
+    """Unified diff of two versions in normalized YAML, so formatting differences don't show."""
+    return "".join(difflib.unified_diff(
+        a.to_yaml().splitlines(keepends=True), b.to_yaml().splitlines(keepends=True),
+        fromfile=f"{a.program}/v{a.version}", tofile=f"{b.program}/v{b.version}"))
+
+
+def changed_steps(a: Program, b: Program) -> dict[str, list[str]]:
+    """Step ids added, removed or changed between two versions."""
+    old = {s.id: s for s in a.steps}
+    new = {s.id: s for s in b.steps}
+    return {
+        "added": [i for i in new if i not in old],
+        "removed": [i for i in old if i not in new],
+        "changed": [i for i in new if i in old and new[i] != old[i]],
+    }
 
 
 def main(argv: list[str] | None = None) -> None:
