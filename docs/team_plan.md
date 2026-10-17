@@ -1,17 +1,17 @@
 # Team Plan: Splitting the Work Four Ways
 
-Who builds what, and what each person hands to the others. The four roles come from [build_plan.md → 24-hour plan](build_plan.md#24-hour-plan).
+Who builds what, and what each person hands to the others. The design is in [architecture.md](architecture.md), and what we measure is in [benchmark.md](benchmark.md).
 
 ## Roles at a glance
 
 | Role | Owns | Code | Interfaces owned | Who |
 |---|---|---|---|---|
-| **A: Runtime** | Executor, guard engine, judge, healer, diff + rollback, receipt check | `browseen/executor/`, `guards/`, `healer/`, `api.py` | Event stream; approval API (with D) | _fill in_ |
-| **B: Capture** | Browser Use recorder, compiler, YAML schema, CLI, the two hand-authored branches | `browseen/recorder/`, `compiler/`, `__main__.py`, `programs/` | Program YAML schema | _fill in_ |
-| **C: Sites + benchmark** | Three portals with audit log and mutation switch, the benchmark harness, the benchmark runs, (Vultr deploy) | `portals/`, `bench/` | Audit-log schema; mutation list | _fill in_ |
-| **D: Product + story** | Dashboard, approvals queue, Slack, Sentry, README, Devpost, demo and video | `dashboard/`, `browseen/observability.py`, `browseen/tracing.py`, `README.md` | Approval API (with A) | _fill in_ |
+| **A: Runtime + healer** | Compiled replay on Playwright, guard checks, the three healing tiers, versioning and rollback | `browseen/runtime/`, `browseen/healer/`, `browseen/api.py` (with D) | Event stream; run API (with D) | _fill in_ |
+| **B: Recorder + compiler** | Recording the Browser Use run, compiling it into a program, the CLI | `browseen/recorder/`, `browseen/compiler/`, `browseen/__main__.py`, `programs/` | Trace format; **program YAML** | _fill in_ |
+| **C: Testbed + benchmark** | The test sites with page-change switches, the benchmark harness and runs | `testbed/`, `bench/` | Testbed contract; mutation list; task definitions | _fill in_ |
+| **D: Dashboard + Sentry + story** | The demo dashboard, Sentry, README, Devpost, the pitch and the video | `dashboard/`, `browseen/observability.py`, `browseen/tracing.py`, `docs/sentry.md`, `README.md` | Run API (with A) | _fill in_ |
 
-Charlie has already started the Sentry setup (`browseen/observability.py`, `browseen/tracing.py`), which is D's area.
+Charlie has already built the Sentry setup and span helpers (`observability.py`, `tracing.py`, `docs/sentry.md`), which is D's area.
 
 **Matching people to roles:**
 
@@ -22,59 +22,54 @@ Charlie has already started the Sentry setup (`browseen/observability.py`, `brow
 
 ## What each person builds
 
-### A: Runtime
+### A: Runtime + healer
 
-- **Executor:** runs a YAML program on Playwright and writes the event stream (`events.jsonl` + SSE).
-- **Deterministic checks:** `url_matches`, `element` (role + name + enabled), `text_visible`, structural fingerprint.
-- **Failure rules by risk:** heal on read steps; stop and ask on write and irreversible steps.
-- **Judge:** a cheap model, called only on write steps and on elements that still match but were renamed.
-- **Healer:** a one-step patch that is dry-run against the same post-check. On a pass, the version goes up and the diff is stored.
-- **Rollback** to any earlier program version.
-- **Receipt check** against the portal's audit table.
-- **Approval API + SSE endpoint**, built with D. Approving resumes the run, and a `stopped` event carries everything Slack needs.
-- **System D adapter** for C's harness: run one program on one mutation and return the outcome.
-- **Tuning:** remove false alarms on mutations 1, 2 and the control.
+- **Runtime.** Run a program YAML on Playwright. For each step: check `when`, resolve the target through the locator list, run the pre-checks, act, wait, run the post-checks. Run the success check at the end.
+- **Checks:** `url_matches`, `unique` / exists / enabled, `text_visible`, element fingerprint.
+- **Tier 1 heal:** try the other locators, then fuzzy-match the fingerprint against the accessibility tree. No LLM.
+- **Tier 2 heal:** one LLM call returns a structured patch (a new target, inserted steps, or a new branch arm). It's dry-run and must pass the step's post-checks.
+- **Tier 3 heal:** hand the same browser to a Browser Use agent over CDP, and resume compiled replay as soon as a later step's pre-checks pass.
+- **Versioning:** every accepted patch becomes `v(N+1)` with a diff and a reason; `rollback` restores any earlier version.
+- **Event stream** (`runs/<id>/events.jsonl` + SSE), and the run API, built with D.
+- **System adapters for C's harness:** `browseen`, `browseen-t1`, `browseen-t2`, and `takeover` (on any failure, the agent finishes the task).
+- **Sentry spans** in the runtime and healer, using D's helpers in `tracing.py` (`step_span`, `mark_healed` with `heal.tier`).
 
-### B: Capture
+### B: Recorder + compiler
 
-- **Browser Use setup.** Pin the version and smoke-test it with `ChatAnthropic(model="claude-opus-5-5", thinking={"type": "adaptive"})`; without `thinking` it fails with HTTP 400. Confirm the step history has element data.
-- **Recorder:** records the eligibility flow on portal A and tags each step read, write or irreversible.
-- **Program YAML schema** plus an example file, `programs/eligibility-check/v1.yaml`.
-- **Compiler:** one LLM pass from the recording to v1, with intents, pre- and post-checks, receipt rules, risk tags and `$parameters`.
-- **CLI:** `record`, `compile`, `run`, `doctor`, `heal`, `rollback`, wrapping A's functions.
-- **The two hand-authored branches:** the consent banner (mutation 6) and the extra confirmation page (mutation 7).
-- **Harness adapters** for systems A (agent every run) and B (blind replay from the recorded selectors), paired with C.
-- **README draft** with D, including the run steps and the **reused-vs-new table**. Browser Use and Playwright are reused; everything else was written this weekend.
+- **Browser Use setup.** Pin the version in `requirements.txt` and smoke-test it with `ChatAnthropic(model="claude-opus-5-5", thinking={"type": "adaptive"})`; without `thinking` it fails with HTTP 400. Confirm the step history has element data.
+- **Recorder.** Hook the agent's steps to capture the action, the target element (XPath, accessible name, attributes), the URL, a page snapshot, a screenshot, the agent's stated goal, and tokens and time. Write `runs/<id>/trace.json`.
+- **Program YAML schema,** plus a hand-written example `programs/buy-item/v1.yaml` for A and D to build against.
+- **Compiler.** Normalize the trace, turn task inputs into `$params`, build the locator list and fingerprint, generate the pre- and post-checks and the success check, and mark optional steps such as the cookie banner. It uses one LLM pass for parameter names, intents and optional steps.
+- **CLI:** `python -m browseen record | compile | run | diff | rollback`. `run`, `diff` and `rollback` wrap A's functions.
+- **Harness adapters** for the `agent` and `replay` (Browser Use `load_and_rerun`) systems, paired with C.
+- **README section with D:** how to run it, plus the reused-vs-new table. Browser Use and Playwright are reused; everything else was written at the event.
 
-### C: Sites + benchmark
+### C: Testbed + benchmark
 
-- **Devin sessions** for the portal generator and the harness scaffold, kept as proof for the Cognition track.
-- **Portals** A, B and C (FastAPI + Jinja + SQLite, three layouts from one generator) with the eight-step eligibility flow and synthetic patients.
-- **Audit-log schema and table**, plus a `run_id` header recorded in audit rows and a reset script.
-- **Mutation switch** (query param or header) for all ten mutations.
-- **`bench/mutations.md`:** the ten mutations, each with a "correct response" label. **Commit it before any benchmark run.**
-- **Harness:** `bench/run.py` with systems A–D, writing JSONL rows, with a dollar cap and a step cap.
-- **Sentry browser SDK + Session Replay** on the portals, with D.
-- **Split-screen setup** with D: two portal instances on mutation 9, blind replay on the left and Browseen on the right.
-- **Benchmark runs** and `bench/report.py`: the heatmap and the headline numbers, handed to D.
-- *Optional:* deploy the portals and runner to Vultr. The demo must not depend on it.
+- **Devin sessions** for the test-site generator and the harness scaffold, kept as proof for the Cognition track.
+- **Test sites**, built with FastAPI + Jinja + SQLite: the **shop** (the demo task), then the **portal** and **CRM**.
+- **Testbed hooks:** `?mut=<ids>&seed=<n>`, `POST /__reset`, `GET /__verify`, and a `run_id` header recorded server-side.
+- **Mutations M00–M16** in `testbed/mutations.py`, and the catalog with the dev / held-out split in `bench/mutations.yaml`. **Commit the list before the first benchmark run.** Ask a teammate who isn't working on the healer to write the held-out set.
+- **Task definitions:** `bench/tasks/T1.yaml` and the others.
+- **Harness:** `bench/run.py` (resumable, with a budget cap, one JSONL row per run, every run traced in Sentry) and `bench/config.yaml`.
+- **Benchmark runs,** including the drift scenario, then `bench/report.py` for the charts and headline numbers, which go to D.
+- **Sentry browser SDK + Session Replay** on the test sites, with D.
+- *Optional:* deploy the test sites to Vultr. The demo must not depend on it.
 
-### D: Product + story
+### D: Dashboard + Sentry + story
 
-- **Accounts:** the Sentry project (share the DSN in `.env`) and the Slack incoming webhook.
-- **Dashboard** (React + Vite + Tailwind):
-  - program view: steps, intents, read/write tags, checks;
-  - live counters: tokens, $, seconds;
-  - diff view with the **gold seam** on healed steps;
-  - approvals queue: intent, screenshot, diff, trace link, Approve / Reject;
-  - split-screen view;
-  - break-it panel: pick a mutation, or "Surprise me".
-- **Slack alert** on every stop.
+- **Dashboard** (React + Vite + Tailwind), reading the event stream:
+  - **side-by-side runs** with live counters for time, tokens, $ and LLM calls (first agent run vs. compiled run);
+  - the **program view**, showing steps, intents, guards and branches, with healed steps highlighted;
+  - a **diff view** for v1 → v2, showing the tier and the reason;
+  - the **chaos panel**, which turns test-site mutations on and off live for the judge;
+  - a **benchmark page** with C's charts.
 - **Sentry:**
-  - step attributes (`step.id`, `step.risk`, `guard.result`) and a Logs line per guard decision, with A;
-  - Session Replay on the portals, with C;
-  - a **build log** of real Sentry moments for the Sentry write-up.
-- **Story:** Maria's story card, the README and Devpost (with B), the 60-second backup capture, rehearsals, the 2–3 minute video, and the Devpost submission, including the Commit Fellowship opt-in.
+  - extend `tracing.py` as A needs;
+  - add a `gen_ai.invoke_agent` span around tier 3, so it shows up in AI agent monitoring;
+  - set up Session Replay on the test sites with C;
+  - keep the findings log in `docs/sentry.md` up to date with real moments.
+- **Story:** the README, the Devpost write-up (one paragraph per company challenge), the demo script, a 60-second backup recording, the 2–3 minute video, and the submission, including the Commit Fellowship opt-in.
 
 ## Handoffs
 
@@ -82,22 +77,21 @@ Nobody should be blocked on another person. Work against a mock until the real p
 
 | Dependency | From → to | Mock until then |
 |---|---|---|
-| Portal A with the eligibility flow | C → A, B | A: a saved HTML copy of a simple form. B: record a Browser Use run on any simple page to learn the history format. |
-| Audit-log schema | C → A, C's harness | The proposal in [architecture.md](architecture.md#audit-log-proposal-for-c) |
-| Program YAML schema + example file | B → A, D | A hand-written `programs/eligibility-check/v1.yaml` that A and B draft together |
-| Compiled program from a real recording | B → A | The hand-written v1 |
-| Event stream (`events.jsonl` + SSE) | A → D | A fake `runs/sample/events.jsonl`, written from the proposal in [architecture.md](architecture.md#event-stream-proposal-for-a) |
-| System D adapter | A → C | C builds systems A (agent) and B (blind replay) first |
-| CLI commands | B → everyone | Call the Python functions directly |
-| Approval API | A + D | The dashboard queue reads `stopped` events from the fake stream |
-| Benchmark numbers | C → D | Placeholder "*k* of *N*" in the README and Devpost drafts |
+| Shop site with the demo task | C → A, B | A: a saved HTML copy of a simple page. B: record a Browser Use run on any simple site to learn the history format. |
+| Program YAML schema + example file | B → A, D | The example in [architecture.md](architecture.md#program-format-owner-b), hand-written as `programs/buy-item/v1.yaml` |
+| A compiled program from a real recording | B → A | The hand-written v1 |
+| Event stream | A → D | A fake `runs/sample/events.jsonl`, written from the proposal in [architecture.md](architecture.md#event-stream-proposal-for-a) |
+| Run API | A + D | D's dashboard reads the fake stream; A calls functions directly |
+| System adapters (`browseen`, `takeover`, …) | A → C | C builds the `agent` and `replay` systems first (with B) |
+| Mutation IDs | C → D (chaos panel) | Hard-code M04, M06 and M09 in the panel |
+| Benchmark numbers | C → D | Placeholders in the README and Devpost drafts |
 
 ## Ownership rules
 
 - **Each folder has one owner** (see the table at the top). Edit someone else's folder only after asking them.
-- **Only the owner changes an interface:** B for the YAML schema, C for the audit log and mutation list, A for the event stream, A + D together for the approval API. Post any change in the team chat first.
-- **Every teammate must be able to explain the core code** (compile, guards, heal), even if it isn't their piece.
+- **Only the owner changes an interface:** B for the trace format and the program YAML, A for the event stream, A + D together for the run API, C for the testbed contract and the mutation list. Post any change in the team chat first.
+- **Every teammate must be able to explain the core loop:** record, compile, replay, check, heal. Judges ask.
 
 ## If we're only three
 
-From the build plan: C also takes D's Sentry work, and the break-it panel and Slack move to Stretch.
+C also takes D's Sentry work, the chaos panel becomes a fixed list of three mutations, and the benchmark shrinks to its minimum version (see [benchmark.md → If we're short on time](benchmark.md#12-if-were-short-on-time)).
