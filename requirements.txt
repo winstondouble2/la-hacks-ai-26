@@ -1,0 +1,2 @@
+sentry-sdk>=2.35
+python-dotenv>=1.0
