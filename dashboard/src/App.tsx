@@ -1,41 +1,87 @@
 import { useEffect, useState } from 'react'
+import { API_MODE, listApprovals, listRuns, loadRun, loadVersions, sentryTraceUrl, subscribeRun, type StreamState } from './api'
+import ApprovalsView from './ApprovalsView'
+import BenchmarkView from './BenchmarkView'
+import ChaosView from './ChaosView'
 import DiffView from './DiffView'
-import { loadEvents, type EventType, type RunEvent } from './events'
+import { dedupeEvents, type EventType, type RunEvent } from './events'
+import { REAL_DEMO_TRACES, type Approval } from './fixtures'
+import ObservabilityView from './ObservabilityView'
+import OverviewView from './OverviewView'
 import ProgramView from './ProgramView'
-import { loadVersions, type Program } from './programs'
-
-const SENTRY_ORG_URL = 'https://la-hacksss.sentry.io'
+import { type Program } from './programs'
+import RaceView from './RaceView'
+import { durationMs, summarize, totalsAt, useReplay, type RunSummary, type Totals } from './replay'
 
 // Run id comes from ?run=<id>; the fake stream lives in runs/sample/.
-const runId = new URLSearchParams(location.search).get('run') ?? 'sample'
+// ?baseline=<id> is the first (agent) run of the same task, for the side-by-side.
+const params = new URLSearchParams(location.search)
+const runId = params.get('run') ?? 'sample'
+const baselineId = params.get('baseline') ?? (runId === 'sample' ? 'sample-agent' : null)
 
 const VIEWS = {
+  overview: { tab: 'Overview', title: 'Every run, at a glance.' },
   events: { tab: 'Events', title: 'Every step, seen.' },
+  race: { tab: 'Side by side', title: 'Slow once. Instant after.' },
   program: { tab: 'Program', title: 'The compiled program.' },
   diff: { tab: 'Diff', title: 'Only what broke changed.' },
+  chaos: { tab: 'Chaos', title: 'Break the page.' },
+  approvals: { tab: 'Approvals', title: 'A person decides.' },
+  benchmark: { tab: 'Benchmark', title: 'Benchmark results.' },
+  observability: { tab: 'Observability', title: 'What Sentry saw.' },
 } as const
 type View = keyof typeof VIEWS
 
 function initialView(): View {
   const v = new URLSearchParams(location.search).get('view')
-  return v && v in VIEWS ? (v as View) : 'events'
+  return v && v in VIEWS ? (v as View) : 'overview'
 }
 
 export default function App() {
   const [events, setEvents] = useState<RunEvent[]>([])
+  const [baseline, setBaseline] = useState<RunEvent[]>([])
   const [versions, setVersions] = useState<Program[]>([])
   const [error, setError] = useState<string | null>(null)
   const [view, setView] = useState<View>(initialView)
+  const [stream, setStream] = useState<StreamState>('mock')
+  const [allRuns, setAllRuns] = useState<Record<string, RunEvent[]>>({})
+  const [approvals, setApprovals] = useState<Approval[]>([])
 
   useEffect(() => {
-    loadEvents(runId).then(setEvents, (e: Error) => setError(e.message))
+    loadRun(runId).then((e) => setEvents((prev) => dedupeEvents([...e, ...prev])), (e: Error) => setError(e.message))
+    // The side-by-side is optional: without a baseline run, its column stays empty.
+    if (baselineId) loadRun(baselineId).then(setBaseline, () => setBaseline([]))
+    // Real mode: new events arrive over SSE; reconnects may resend, so dedupe.
+    return subscribeRun(runId, (e) => setEvents((prev) => dedupeEvents([...prev, e])), setStream)
   }, [])
+
+  useEffect(() => {
+    listRuns()
+      .then((ids) => Promise.all(ids.map((id) => loadRun(id).then((ev) => [id, ev] as const, () => [id, []] as const))))
+      .then((pairs) => setAllRuns(Object.fromEntries(pairs)), (e: Error) => setError(e.message))
+    listApprovals().then(setApprovals, () => setApprovals([]))
+  }, [])
+
+  // Mock mode replays recorded runs at real speed; real mode shows events as they arrive.
+  const replay = useReplay(API_MODE === 'mock' ? Math.max(durationMs(events), durationMs(baseline)) : 0)
+  const elapsed = API_MODE === 'mock' ? replay.elapsed : Number.POSITIVE_INFINITY
+  const compiledNow = totalsAt(events, elapsed)
+  const baselineNow = baseline.length ? totalsAt(baseline, elapsed) : null
+  const summaries = Object.values(allRuns).map(summarize).filter((r): r is RunSummary => r !== null)
 
   const first = events[0]
 
   useEffect(() => {
     if (first) loadVersions(first.program).then(setVersions, (e: Error) => setError(e.message))
   }, [first])
+
+  function openRun(id: string) {
+    const url = new URL(location.href)
+    url.searchParams.set('run', id)
+    url.searchParams.delete('baseline')
+    url.searchParams.set('view', 'events')
+    location.assign(url)
+  }
 
   function selectView(v: View) {
     setView(v)
@@ -48,7 +94,7 @@ export default function App() {
   const healed = events.some((e) => e.type === 'healed')
 
   // Hand-made data must never pass for a real run, in the demo or at 4am.
-  const sampleRun = runId === 'sample'
+  const sampleRun = API_MODE === 'mock' || runId.startsWith('sample') || !!baselineId?.startsWith('sample')
   const examplePrograms = versions.filter((p) => p.history?.some((h) => h.reason?.startsWith('EXAMPLE')))
 
   return (
@@ -56,11 +102,19 @@ export default function App() {
       {(sampleRun || examplePrograms.length > 0) && (
         <SampleBanner sampleRun={sampleRun} exampleVersions={examplePrograms.map((p) => p.version)} />
       )}
-      <Chrome runId={first?.run_id ?? runId} finished={!!finished} healed={healed} />
+      <Chrome runId={first?.run_id ?? runId} finished={!!finished} healed={healed} stream={stream} empty={!events.length} />
       <main className="flex flex-1 flex-col lg:flex-row">
         <aside className="flex flex-col justify-between gap-12 border-ink px-6 py-10 lg:w-[560px] lg:shrink-0 lg:border-r-[1.5px] lg:px-10 lg:pt-12">
           <Wordmark />
-          {finished && <Summary finished={finished} />}
+          {first && (
+            <Summary
+              compiled={compiledNow}
+              baseline={baselineNow}
+              version={finished?.version ?? first.version}
+              playing={API_MODE === 'mock' && replay.playing}
+              onReplay={replay.play}
+            />
+          )}
         </aside>
         <section className="flex min-w-0 flex-1 flex-col gap-6 px-6 py-10 lg:px-12 lg:pt-12">
           <header className="flex flex-wrap items-end justify-between gap-4">
@@ -77,14 +131,26 @@ export default function App() {
           <Tabs view={view} onChange={selectView} />
           {error ? (
             <p className="text-fail">{error}</p>
+          ) : view === 'overview' ? (
+            <OverviewView runs={summaries} approvals={approvals} currentRunId={first?.run_id ?? runId} onOpen={(id) => openRun(runIdFor(id, allRuns))} />
           ) : view === 'events' ? (
             <EventList events={events} />
+          ) : view === 'race' ? (
+            <RaceView baseline={baseline} compiled={events} elapsed={elapsed} />
+          ) : view === 'chaos' ? (
+            <ChaosView program={first?.program ?? 'buy-item'} onRunStarted={openRun} />
+          ) : view === 'approvals' ? (
+            <ApprovalsView onChange={setApprovals} />
+          ) : view === 'benchmark' ? (
+            <BenchmarkView />
+          ) : view === 'observability' ? (
+            <ObservabilityView runs={allRuns} stream={stream} />
           ) : !versions.length ? (
             <p className="text-muted">Loading program…</p>
           ) : view === 'program' ? (
             <ProgramView program={versions[versions.length - 1]} events={events} />
           ) : (
-            <DiffView versions={versions} />
+            <DiffView versions={versions} events={events} onRolledBack={(p) => setVersions((v) => [...v, p])} />
           )}
           <div className="flex-1" />
           {first && <SentryFooter event={events.find((e) => e.type === 'healed') ?? first} />}
@@ -96,7 +162,7 @@ export default function App() {
 
 function SampleBanner({ sampleRun, exampleVersions }: { sampleRun: boolean; exampleVersions: number[] }) {
   const parts = [
-    sampleRun && 'this run is hand-written sample data (runs/sample)',
+    sampleRun && 'runs, approvals and benchmark results are synthetic (runs/sample*, dashboard/src/fixtures.ts)',
     exampleVersions.length > 0 && `program ${exampleVersions.map((v) => `v${v}`).join(', ')} is an example`,
   ].filter(Boolean)
   return (
@@ -113,12 +179,12 @@ function SampleBanner({ sampleRun, exampleVersions }: { sampleRun: boolean; exam
 
 function Tabs({ view, onChange }: { view: View; onChange: (v: View) => void }) {
   return (
-    <nav className="-mb-2 flex gap-1 self-start rounded-full border-[1.5px] border-ink p-1 text-sm font-medium">
+    <nav className="-mb-2 flex flex-wrap gap-1 self-start rounded-[22px] border-[1.5px] border-ink p-1 text-sm font-medium">
       {(Object.keys(VIEWS) as View[]).map((v) => (
         <button
           key={v}
           onClick={() => onChange(v)}
-          className={`rounded-full px-4 py-1.5 transition-colors ${
+          className={`whitespace-nowrap rounded-full px-3.5 py-1.5 transition-colors ${
             v === view ? 'bg-ink text-chart' : 'hover:bg-[#f1f1f2]'
           }`}
         >
@@ -129,14 +195,28 @@ function Tabs({ view, onChange }: { view: View; onChange: (v: View) => void }) {
   )
 }
 
+// Overview rows show the event's run id (r_042); mock runs are loaded by folder (sample).
+function runIdFor(id: string, runs: Record<string, RunEvent[]>): string {
+  return Object.entries(runs).find(([, ev]) => ev[0]?.run_id === id)?.[0] ?? id
+}
+
 function modeLabel(events: RunEvent[]) {
   const versions = [...new Set(events.map((e) => e.version))]
   const span = versions.length > 1 ? `v${versions[0]} → v${versions.at(-1)}` : `v${versions[0]}`
   return `${span} · ${events[0].mode}`
 }
 
-function Chrome({ runId, finished, healed }: { runId: string; finished: boolean; healed: boolean }) {
-  const status = finished ? (healed ? 'Healed · finished' : 'Finished') : 'Running'
+const STREAM_LABEL: Record<StreamState, [string, string]> = {
+  mock: ['mock data', 'bg-muted'],
+  connecting: ['connecting', 'bg-heal'],
+  live: ['live', 'bg-pass'],
+  reconnecting: ['reconnecting', 'bg-heal'],
+  closed: ['disconnected', 'bg-fail'],
+}
+
+function Chrome({ runId, finished, healed, stream, empty }: { runId: string; finished: boolean; healed: boolean; stream: StreamState; empty: boolean }) {
+  const status = empty ? 'No data' : finished ? (healed ? 'Healed · finished' : 'Finished') : 'Running'
+  const [streamText, streamDot] = STREAM_LABEL[stream]
   return (
     <div className="flex items-center gap-5 border-b-[1.5px] border-ink px-6 py-3.5 lg:px-10">
       <div className="flex shrink-0 gap-2">
@@ -147,9 +227,13 @@ function Chrome({ runId, finished, healed }: { runId: string; finished: boolean;
         <EyeIcon className="size-4 shrink-0" />
         <span className="text-muted">browseen://</span>
         <span className="truncate font-semibold">runs/{runId}</span>
+        <span className="ml-auto hidden shrink-0 items-center gap-1.5 text-xs text-muted sm:flex" title="Event stream connection">
+          <span className={`size-2 rounded-full ${streamDot}`} />
+          {streamText}
+        </span>
       </div>
       <div className="flex shrink-0 items-center gap-2 rounded-full bg-ink px-3.5 py-2 text-[13px] font-medium uppercase tracking-[0.06em] text-chart">
-        <span className={`size-2 rounded-full ${healed ? 'bg-heal' : 'bg-pass'}`} />
+        <span className={`size-2 rounded-full ${empty ? 'bg-muted' : healed ? 'bg-heal' : 'bg-pass'}`} />
         <span className="hidden sm:inline">{status}</span>
       </div>
     </div>
@@ -200,29 +284,67 @@ function EyeIcon({ className }: { className?: string }) {
   )
 }
 
-function Summary({ finished }: { finished: RunEvent }) {
-  // The first-run (agent) column needs a baseline run in the stream; until A
-  // emits one, it shows a dash instead of made-up numbers.
-  const rows: [string, string][] = [
-    ['Time', `${finished.seconds?.toFixed(1) ?? '—'} s`],
-    ['Tokens', finished.tokens.toLocaleString()],
-    ['Cost', `$${finished.usd.toFixed(3)}`],
-    ['LLM calls', String(finished.llm_calls)],
+function Summary({
+  compiled,
+  baseline,
+  version,
+  playing,
+  onReplay,
+}: {
+  compiled: Totals
+  baseline: Totals | null
+  version: number
+  playing: boolean
+  onReplay: () => void
+}) {
+  const fmt: [string, (t: Totals) => string][] = [
+    ['Time', (t) => `${t.seconds.toFixed(1)} s`],
+    ['Tokens', (t) => t.tokens.toLocaleString()],
+    ['Cost', (t) => `$${t.usd.toFixed(3)}`],
+    ['LLM calls', (t) => String(t.llmCalls)],
   ]
+  const ratio = baseline?.finished && compiled.finished && compiled.seconds > 0 ? baseline.seconds / compiled.seconds : null
   return (
-    <div className="flex flex-col border-t-[1.5px] border-ink">
-      <div className="flex py-2.5 text-xs font-medium uppercase tracking-[0.12em] text-muted">
-        <span className="w-24 shrink-0 sm:w-40" />
-        <span className="flex-1 text-right">First run · agent</span>
-        <span className="flex-1 text-right text-ink">Compiled · v{finished.version}</span>
-      </div>
-      {rows.map(([label, value]) => (
-        <div key={label} className="flex items-baseline border-t border-rule py-3 font-mono text-[15px]">
-          <span className="w-24 shrink-0 font-sans text-muted sm:w-40">{label}</span>
-          <span className="flex-1 text-right text-muted">—</span>
-          <span className="flex-1 text-right text-[22px] font-bold">{value}</span>
+    <div className="flex flex-col gap-7">
+      <div className="flex min-h-[80px] items-end gap-4">
+        {ratio && (
+          <span className="font-display condensed text-[96px] leading-[80px] font-extrabold tracking-[-0.04em] tabular-nums">
+            {Math.round(ratio)}×
+          </span>
+        )}
+        <div className="flex flex-col items-start gap-2 pb-1">
+          <span className="text-[17px] leading-6">
+            {ratio ? 'faster than the first run.' : baseline ? 'Replaying both runs…' : 'Replaying the run…'}
+            {ratio && (
+              <>
+                <br />
+                {compiled.llmCalls} LLM call{compiled.llmCalls === 1 ? '' : 's'} on replay vs {baseline!.llmCalls}.
+              </>
+            )}
+          </span>
+          <button
+            onClick={onReplay}
+            disabled={playing}
+            className="rounded-full border-[1.5px] border-ink px-3 py-1 text-[13px] font-medium enabled:hover:bg-ink enabled:hover:text-chart disabled:opacity-40"
+          >
+            ↻ Replay
+          </button>
         </div>
-      ))}
+      </div>
+      <div className="flex flex-col border-t-[1.5px] border-ink">
+        <div className="flex py-2.5 text-xs font-medium uppercase tracking-[0.12em] text-muted">
+          <span className="w-24 shrink-0 sm:w-40" />
+          <span className="flex-1 text-right">First run · agent</span>
+          <span className="flex-1 text-right text-ink">Compiled · v{version}</span>
+        </div>
+        {fmt.map(([label, show]) => (
+          <div key={label} className="flex items-baseline border-t border-rule py-3 font-mono text-[15px] tabular-nums">
+            <span className="w-24 shrink-0 font-sans text-muted sm:w-40">{label}</span>
+            <span className="flex-1 text-right text-muted">{baseline ? show(baseline) : '—'}</span>
+            <span className="flex-1 text-right text-[22px] font-bold">{show(compiled)}</span>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -298,7 +420,9 @@ function EventList({ events }: { events: RunEvent[] }) {
 }
 
 function SentryFooter({ event }: { event: RunEvent }) {
-  const traceUrl = `${SENTRY_ORG_URL}/explore/traces/trace/${event.trace_id}`
+  // Only link traces that exist: every real-mode trace, and the one demo trace in mock mode.
+  const traceUrl = API_MODE === 'real' || REAL_DEMO_TRACES.has(event.trace_id) ? sentryTraceUrl(event.trace_id) : null
+  if (!traceUrl) return null
   return (
     <div className="flex flex-wrap items-center justify-between gap-4 rounded-[14px] bg-ink px-5 py-4 text-chart">
       <div className="flex flex-col gap-1">
