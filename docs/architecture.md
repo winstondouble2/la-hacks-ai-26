@@ -89,13 +89,13 @@ Prices are in `browseen/costs.py`.
 
 ### Compiler (B)
 
-**v0 is built**, with no LLM yet, in `browseen/compiler/`:
+**Built** in `browseen/compiler/`: deterministic passes (v0) plus one LLM pass (v1).
 
 ```bash
 python -m browseen.compiler runs/<run_id> --name mini-shop
 ```
 
-That writes `programs/mini-shop/v1.yaml` and prints a compile report: each trace action is kept (and which step it became), dropped (with the reason) or unsupported, plus each locator candidate with ✓/✗. Add `--dry-run` to print the program without saving. The compiler refuses to write into an existing program folder.
+That writes `programs/mini-shop/v1.yaml` and prints a compile report: each trace action is kept (and which step it became), dropped (with the reason) or unsupported, plus each locator candidate with ✓/✗, and the LLM pass's tokens and cost. Add `--dry-run` to print the program without saving, or `--no-llm` for v0 only. The compiler refuses to write into an existing program folder.
 
 Compiled from the mini-shop recording, the program replays with Blue Mug ×2 and with Red Kettle ×1, with 0 LLM calls.
 
@@ -118,14 +118,28 @@ Compiled from the mini-shop recording, the program replays with Blue Mug ×2 and
 - Pre-checks: the page path, the target is unique, and the target is enabled (for clicks).
 - Post-checks: the field's value (for fill and select), the new page path, and the shortest text line on the new page that names an input (for example `$qty × $product`). That last one catches a wrong-item click.
 - Success check: a heading or text line on the final page that names an input.
+- A click that adds no text but makes its own target disappear (dismissing a banner) gets an `absent` post-check.
 
-**v0 limits:**
+**The LLM pass (v1)** is in `annotate.py`. It's one structured-output call to `claude-opus-5-5` (effort `medium`, with a server-side fallback to Opus 4.8) that costs about $0.015 per compile.
 
-- Intents are templates (`Click 'Add to cart'`).
-- There are no optional-step branches yet.
+- **What the model sees:** each step's action, target, page path, v0 intent, the recording agent's own goal, and a *container hint* (for example `dialog "Cookie consent"`, from the element's nearest dialog, banner or popup ancestor). It also sees the final page's text.
+- **What it returns:** an intent per step, which steps are optional, a description per param, and success text.
+
+Every suggestion passes a guard before it's used:
+
+- The step IDs must match exactly.
+- Intents may only use declared `$params`.
+- Only a `click` with a target can be optional, and we build its `when: {exists: <first locator>}` ourselves.
+- The success text must actually appear on the final page.
+
+If the call fails or is refused, or there's no API key, the compiler keeps the v0 output and prints a warning.
+
+On a recording that dismissed the shop's cookie wall (`?banner=1` on the mini shop), v1 marks that click optional, so the program runs it when the wall appears and skips it when consent is already stored. The v0 program fails in the second case.
+
+**Limits:**
+
 - The CSS and XPath fallbacks for parameter-dependent elements still point at the recorded item. The post-checks catch that.
-
-The LLM pass (role-plan step 5) adds clean intents and optional steps.
+- Branches learned from heals and merging several recordings are not built.
 
 The full design, including the LLM pass:
 

@@ -1,4 +1,7 @@
-"""Compiler v0: turn a recorded trace into a program. Deterministic, no LLM.
+"""Turn a recorded trace into a program.
+
+v0 is deterministic. v1 adds one LLM pass (annotate.py) for intents, optional steps,
+param descriptions and the success text; without it the v0 output is used as is.
 
   normalize  Browser Use actions -> the actions worth replaying (with a reason for each drop)
   locators   candidates verified on the recorded page (locators.py)
@@ -12,8 +15,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+from browseen.compiler.annotate import LLMResult, StepContext
 from browseen.compiler.locators import PageAnalyzer, fingerprint_attrs
 from browseen.compiler.params import mentions_input, param_type, templatize, url_path, url_pattern
 from browseen.program import Action, Change, Check, Fingerprint, Locator, Param, Program, Step, Target, save
@@ -46,6 +50,7 @@ class CompileReport:
     lines: list[ReportLine] = field(default_factory=list)
     locators: dict[str, list[str]] = field(default_factory=dict)  # program step id -> verdict per candidate
     warnings: list[str] = field(default_factory=list)
+    llm: LLMResult | None = None
 
     def add(self, step: TraceStep, action: TraceAction, outcome: str, detail: str = "") -> None:
         self.lines.append(ReportLine(step.number, action.name, outcome, detail))
@@ -56,6 +61,11 @@ class CompileReport:
             out.append(f"  trace step {line.trace_step:<2} {line.action:<16} {line.outcome:<11} {line.detail}")
             if line.outcome == "kept" and (verdicts := self.locators.get(line.detail.split()[0])):
                 out.extend(f"      {v}" for v in verdicts)
+        if self.llm:
+            u = self.llm.usage
+            status = "used" if self.llm.annotation else "not used"
+            note = f", {self.llm.note}" if self.llm.note else ""
+            out.append(f"  LLM pass ({status}): {self.llm.model}, {u.tokens:,} tokens, ${u.usd:.4f}{note}")
         out.extend(f"  warning: {w}" for w in self.warnings)
         return "\n".join(out)
 
@@ -143,8 +153,11 @@ def _input_line(lines: list[str], inputs: dict[str, Any]) -> str | None:
 
 
 def _effect_checks(k: Kept, pa: PageAnalyzer, run_dir: Path, inputs: dict[str, Any], report: CompileReport,
-                   step_id: str) -> list[Check]:
-    """Post-checks for what a click / key press / navigation did to the page."""
+                   step_id: str, target_locator: Locator | None = None) -> list[Check]:
+    """Post-checks for what a click / key press / navigation did to the page.
+
+    `target_locator` is the step's first verified locator (recorded literals, not $params).
+    """
     checks: list[Check] = []
     changed_url = k.step.url_after and url_path(k.step.url) != url_path(k.step.url_after)
     if changed_url:
@@ -155,6 +168,8 @@ def _effect_checks(k: Kept, pa: PageAnalyzer, run_dir: Path, inputs: dict[str, A
     pa.load(after)
     after_lines = pa.text_lines()
     named = _input_line(after_lines, inputs)
+    # A click that made its own target go away (dismissing a banner or popup).
+    target_gone = target_locator is not None and target_locator.to_playwright(pa.page).count() == 0
     if changed_url:
         if named:
             checks.append(Check(text_visible=templatize(named, inputs)))
@@ -169,23 +184,33 @@ def _effect_checks(k: Kept, pa: PageAnalyzer, run_dir: Path, inputs: dict[str, A
         checks.append(Check(text_visible=templatize(named, inputs)))
     elif new:
         checks.append(Check(text_visible=templatize(new[0], inputs)))
+    elif target_gone:
+        checks.append(Check(absent=_templated(target_locator, inputs)))
     else:
         report.warnings.append(f"{step_id}: no visible effect recorded, so no post-check")
     return checks
 
 
-def _success(trace: Trace, pa: PageAnalyzer, run_dir: Path, inputs: dict[str, Any]) -> list[Check]:
+def _success(trace: Trace, pa: PageAnalyzer, run_dir: Path, inputs: dict[str, Any]) -> tuple[list[Check], list[str]]:
+    """The success checks, plus the final page's text lines (the LLM pass picks from them)."""
     final = next((s for s in reversed(trace.steps) if s.html_after), None)
     if final is None:
-        return []
+        return [], []
     pa.load(_read(run_dir, final.html_after) or "")
-    line = _input_line(pa.headings(), inputs) or _input_line(pa.text_lines(), inputs)
+    lines = pa.text_lines()
+    line = _input_line(pa.headings(), inputs) or _input_line(lines, inputs)
     if line:
-        return [Check(text_visible=templatize(line, inputs))]
-    return [Check(url_matches=url_pattern(final.url_after or final.url))] if (final.url_after or final.url) else []
+        return [Check(text_visible=templatize(line, inputs))], lines
+    url = final.url_after or final.url
+    return ([Check(url_matches=url_pattern(url))] if url else []), lines
 
 
-def compile_trace(trace: Trace, run_dir: Path, name: str) -> tuple[Program, CompileReport]:
+Annotator = Callable[..., tuple[Program, LLMResult]]
+
+
+def compile_trace(trace: Trace, run_dir: Path, name: str,
+                  annotate_with: Annotator | None = None) -> tuple[Program, CompileReport]:
+    """Compile a trace. Pass annotate_with=annotate for the v1 LLM pass."""
     run_dir = Path(run_dir)
     report = CompileReport(trace.run_id)
     inputs = trace.inputs
@@ -194,6 +219,7 @@ def compile_trace(trace: Trace, run_dir: Path, name: str) -> tuple[Program, Comp
         raise ValueError("nothing to compile: no replayable actions in the trace")
 
     steps: list[Step] = []
+    contexts: list[StepContext] = []
     with PageAnalyzer() as pa:
         for index, k in enumerate(kept, 1):
             step_id = f"s{index}"
@@ -207,7 +233,8 @@ def compile_trace(trace: Trace, run_dir: Path, name: str) -> tuple[Program, Comp
             else:
                 action = Action(type="navigate", url=templatize(str(params.get("url", "")), inputs))
 
-            target, role, el_name, pre, post = None, None, None, [], []
+            target, role, el_name, container, pre, post = None, None, None, None, [], []
+            first_literal: Locator | None = None
             if k.type in NEEDS_ELEMENT:
                 el = k.action.element
                 found = False
@@ -222,7 +249,9 @@ def compile_trace(trace: Trace, run_dir: Path, name: str) -> tuple[Program, Comp
                     report.locators[step_id] = [f"? {el.xpath} (unverified)"]
                 else:
                     role, el_name, candidates = pa.candidates(el)
+                    container = pa.container(el.xpath)
                     locators = [_templated(c.locator, inputs) for c in candidates if c.kept]
+                    first_literal = next((c.locator for c in candidates if c.kept and not c.locator.xpath), None)
                     report.locators[step_id] = [
                         f"{'✓' if c.kept else '✗'} {c.locator.describe()}"
                         + ("" if c.kept else f"  ({c.matches} matches{'' if c.is_target or not c.matches else ', not the recorded element'})")
@@ -238,13 +267,18 @@ def compile_trace(trace: Trace, run_dir: Path, name: str) -> tuple[Program, Comp
                     post.append(Check(target_value=action.value))
 
             if k.type in ("click", "press", "navigate") and k.last_in_step:
-                post.extend(_effect_checks(k, pa, run_dir, inputs, report, step_id))
+                post.extend(_effect_checks(k, pa, run_dir, inputs, report, step_id, first_literal))
 
             intent = _intent(k, role, el_name, action, inputs)
             steps.append(Step(id=step_id, intent=intent, action=action, target=target, pre=pre, post=post))
             report.add(k.step, k.action, "kept", f"{step_id} {k.type}: {intent}")
+            contexts.append(StepContext(
+                id=step_id, action=k.type, value=action.value, role=role,
+                name=templatize(el_name, inputs) if el_name else None, page=url_path(k.step.url),
+                agent_goal=templatize(k.step.goal, inputs) if k.step.goal else None,
+                container=container, intent=intent))
 
-        success = _success(trace, pa, run_dir, inputs)
+        success, final_lines = _success(trace, pa, run_dir, inputs)
 
     program = Program(
         program=name, version=1, task=trace.task_template, start_url=trace.start_url,
@@ -253,15 +287,20 @@ def compile_trace(trace: Trace, run_dir: Path, name: str) -> tuple[Program, Comp
         history=[Change(version=1, source="compiled", reason=f"compiled from {trace.run_id} (compiler v0, no LLM)",
                         at=datetime.now(timezone.utc).replace(microsecond=0))],
     )
+    if annotate_with is not None:
+        program, report.llm = annotate_with(program, contexts, final_lines, inputs, report.warnings)
+        if report.llm.annotation is not None:
+            program.history[0].reason = f"compiled from {trace.run_id} (compiler v1: 1 LLM pass)"
     return program, report
 
 
-def compile_run(run_dir: Path, name: str, programs_dir: Path, *, dry_run: bool = False) -> tuple[Program, CompileReport, Path | None]:
+def compile_run(run_dir: Path, name: str, programs_dir: Path, *, dry_run: bool = False,
+                annotate_with: Annotator | None = None) -> tuple[Program, CompileReport, Path | None]:
     """Compile runs/<run_id>/ into programs/<name>/v1.yaml. Refuses an existing program folder."""
     from browseen.recorder.trace import load_trace
 
     if (Path(programs_dir) / name).exists():
         raise FileExistsError(f"{Path(programs_dir) / name} already exists; pick another --name")
-    program, report = compile_trace(load_trace(run_dir), Path(run_dir), name)
+    program, report = compile_trace(load_trace(run_dir), Path(run_dir), name, annotate_with)
     path = None if dry_run else save(program, programs_dir)
     return program, report, path

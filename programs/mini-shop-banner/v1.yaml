@@ -1,0 +1,232 @@
+program: mini-shop-banner
+version: 1
+task: Buy $qty of $product and check out as $name, $address
+start_url: http://localhost:8765/?banner=1
+params:
+  product:
+    type: string
+    example: Blue Mug
+    description: Name of the product to buy, as shown in the shop's product link.
+  qty:
+    type: integer
+    example: 2
+    description: Number of units of the product to purchase.
+  name:
+    type: string
+    example: Ada Lovelace
+    description: Full name of the customer for the order.
+  address:
+    type: string
+    example: 1 Main St
+    description: Shipping address for the order.
+steps:
+- id: s1
+  intent: Dismiss the cookie consent banner by rejecting all cookies.
+  action:
+    type: click
+  target:
+    locators:
+    - role: button
+      name: Reject all
+      exact: true
+    - text: Reject all
+      exact: true
+    - xpath: /html/body/div/div/button[2]
+    fingerprint:
+      tag: button
+      role: button
+      name: Reject all
+      attributes:
+        type: button
+      xpath: /html/body/div/div/button[2]
+  when:
+    exists:
+      role: button
+      name: Reject all
+      exact: true
+  pre:
+  - url_matches: /(\?|#|$)
+  - target_unique: true
+  - target_enabled: true
+  post:
+  - absent:
+      role: button
+      name: Reject all
+      exact: true
+  timeout_ms: 5000
+- id: s2
+  intent: Open the product page for $product.
+  action:
+    type: click
+  target:
+    locators:
+    - role: link
+      name: $product
+      exact: true
+    - text: $product
+      exact: true
+    - css: a[href="product.html?id=blue-mug"]
+    - xpath: /html/body/main/ul/li[1]/a
+    fingerprint:
+      tag: a
+      role: link
+      name: Blue Mug
+      attributes:
+        href: product.html?id=blue-mug
+      xpath: /html/body/main/ul/li[1]/a
+  pre:
+  - url_matches: /(\?|#|$)
+  - target_unique: true
+  - target_enabled: true
+  post:
+  - url_matches: /product\.html(\?|#|$)
+  - text_visible: $product
+  timeout_ms: 5000
+- id: s3
+  intent: Set the quantity to $qty.
+  action:
+    type: fill
+    value: $qty
+  target:
+    locators:
+    - label: Quantity
+      exact: true
+    - role: spinbutton
+      name: Quantity
+      exact: true
+    - css: '#qty'
+    - xpath: /html/body/main/input
+    fingerprint:
+      tag: input
+      role: spinbutton
+      name: Quantity
+      attributes:
+        id: qty
+        name: qty
+        type: number
+      xpath: /html/body/main/input
+  pre:
+  - url_matches: /product\.html(\?|#|$)
+  - target_unique: true
+  post:
+  - target_value: $qty
+  timeout_ms: 5000
+- id: s4
+  intent: Add $qty of $product to the cart.
+  action:
+    type: click
+  target:
+    locators:
+    - role: button
+      name: Add to cart
+      exact: true
+    - text: Add to cart
+      exact: true
+    - css: '#add'
+    - xpath: /html/body/main/button
+    fingerprint:
+      tag: button
+      role: button
+      name: Add to cart
+      attributes:
+        id: add
+        type: button
+      xpath: /html/body/main/button
+  pre:
+  - url_matches: /product\.html(\?|#|$)
+  - target_unique: true
+  - target_enabled: true
+  post:
+  - url_matches: /checkout\.html(\?|#|$)
+  - text_visible: $qty × $product
+  timeout_ms: 5000
+- id: s5
+  intent: Enter $name as the full name for checkout.
+  action:
+    type: fill
+    value: $name
+  target:
+    locators:
+    - label: Full name
+      exact: true
+    - role: textbox
+      name: Full name
+      exact: true
+    - css: '#name'
+    - xpath: /html/body/main/form/input[1]
+    fingerprint:
+      tag: input
+      role: textbox
+      name: Full name
+      attributes:
+        id: name
+        name: name
+      xpath: /html/body/main/form/input[1]
+  pre:
+  - url_matches: /checkout\.html(\?|#|$)
+  - target_unique: true
+  post:
+  - target_value: $name
+  timeout_ms: 5000
+- id: s6
+  intent: Enter $address as the shipping address.
+  action:
+    type: fill
+    value: $address
+  target:
+    locators:
+    - label: Address
+      exact: true
+    - role: textbox
+      name: Address
+      exact: true
+    - css: '#address'
+    - xpath: /html/body/main/form/input[2]
+    fingerprint:
+      tag: input
+      role: textbox
+      name: Address
+      attributes:
+        id: address
+        name: address
+      xpath: /html/body/main/form/input[2]
+  pre:
+  - url_matches: /checkout\.html(\?|#|$)
+  - target_unique: true
+  post:
+  - target_value: $address
+  timeout_ms: 5000
+- id: s7
+  intent: Place the order to complete checkout.
+  action:
+    type: click
+  target:
+    locators:
+    - role: button
+      name: Place order
+      exact: true
+    - text: Place order
+      exact: true
+    - xpath: /html/body/main/form/button
+    fingerprint:
+      tag: button
+      role: button
+      name: Place order
+      attributes:
+        type: submit
+      xpath: /html/body/main/form/button
+  pre:
+  - url_matches: /checkout\.html(\?|#|$)
+  - target_unique: true
+  - target_enabled: true
+  post:
+  - url_matches: /done\.html(\?|#|$)
+  - text_visible: 'Order confirmed: $qty × $product'
+  timeout_ms: 5000
+success:
+- text_visible: 'Order confirmed: $qty × $product'
+history:
+- version: 1
+  source: compiled
+  reason: 'compiled from r_20261017-145255 (compiler v1: 1 LLM pass)'
+  at: '2026-10-17T21:54:13Z'

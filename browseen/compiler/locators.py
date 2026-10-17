@@ -27,6 +27,21 @@ INPUT_ROLES = {"checkbox": "checkbox", "radio": "radio", "number": "spinbutton",
 FINGERPRINT_ATTRS = ("id", "name", "type", "href", "placeholder", "aria-label", "data-testid", "role")
 GENERATED_ID_RE = re.compile(r"\d{4,}|[0-9a-f]{8,}|^(ember|react|radix|mui|headlessui|:r)", re.I)
 IS_TARGET_JS = "(el, xpath) => el === document.evaluate(xpath, document, null, 9, null).singleNodeValue"
+# Nearest ancestor that looks like a dialog, banner or popup: a hint that the step may be optional.
+CONTAINER_JS = r"""(el) => {
+  const hint = /cookie|consent|banner|modal|popup|overlay|newsletter/i;
+  for (let n = el.parentElement; n && n !== document.body; n = n.parentElement) {
+    const role = n.getAttribute("role") || (n.tagName === "DIALOG" ? "dialog" : "");
+    const label = n.getAttribute("aria-label");
+    const named = label ? ` "${label}"` : "";
+    if (role === "dialog" || role === "alertdialog" || n.getAttribute("aria-modal") === "true")
+      return (role || "dialog") + named;
+    const cls = typeof n.className === "string" ? n.className : "";
+    if (hint.test(`${n.id} ${cls}`))
+      return n.tagName.toLowerCase() + (n.id ? "#" + n.id : "") + named;
+  }
+  return null;
+}"""
 
 
 @dataclass
@@ -106,6 +121,11 @@ class PageAnalyzer:
         except Exception:
             pass
         return fallback_role(el), el.ax_name
+
+    def container(self, xpath: str) -> str | None:
+        """e.g. 'dialog "Cookie consent"' if the element sits in a dialog, banner or popup."""
+        found = self.page.locator(f"xpath={xpath}")
+        return found.evaluate(CONTAINER_JS) if found.count() == 1 else None
 
     def verify(self, locator: Locator, xpath: str) -> Candidate:
         found = locator.to_playwright(self.page)
