@@ -51,7 +51,7 @@ The analogy is a JIT compiler with deoptimization: fast compiled code guarded by
 |---|---|---|
 | **Main track** | Applied Intelligence (automation) | We make browser automation cheap and reliable enough to run repeatedly. |
 | Company track | Browser Use | Browser Use is our "interpreter" and the tier-3 healer. |
-| Company track | Sentry | Tracing (one span per step, heals visible) + Session Replay of the agent's browser + AI agent monitoring. The track requires using two Sentry products beyond error monitoring. |
+| Company track | Sentry | Tracing (one span per step, heals visible) + Session Replay of the agent's browser + AI agent monitoring. The track requires using two Sentry products beyond error monitoring. Setup and findings log: [sentry.md](sentry.md). |
 | Company track | Cognition | Only if we build parts with Devin. |
 
 Track requirements and judging criteria are collected in [hackathon-plan.md](hackathon-plan.md).
