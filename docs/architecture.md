@@ -1,196 +1,237 @@
 # Architecture
 
-How the Self-Healing Agent Compiler works. For the pitch and motivation see [overview.md](overview.md); for libraries and versions see [tech-stack.md](tech-stack.md).
+How Browseen works, in more depth than [build_plan.md → Technical design](build_plan.md#technical-design). Where this page and the build plan disagree, **the build plan wins**. Anything marked *proposal* is a suggestion for the interface owner to accept or change at the freeze.
 
-## The JIT analogy
-
-The design borrows its vocabulary from JIT compilers, and the analogy holds closely enough to guide implementation decisions:
-
-| JIT compiler | Our system |
-|---|---|
-| Interpreter (slow, general) | LLM browser agent (Browser Use) doing the task step by step |
-| Profiling the interpreter | Recording the agent's trajectory |
-| Compiling the hot path to machine code | Compiling the trajectory into a program (IR) |
-| Type guards in compiled code | Guards on the page state before and after each step |
-| Deoptimization: bail out to the interpreter when a guard fails | Hand only the failing step back to the LLM |
-| Polymorphic inline cache | Keep the old and new paths as branches, so site variants (A/B tests) both run compiled |
-| Recompilation | The verified patch becomes program v(n+1); later runs are compiled again |
-
-## Big picture
+## Pipeline
 
 ```
-                 FIRST RUN (slow, costs tokens)
-  task + params ──► Recorder ──► Browser Use agent ──► trajectory
-                                                          │
-                                                          ▼
-                                                      Compiler
-                                                          │
-                                                          ▼
-                 LATER RUNS (fast, 0 LLM calls)     Program vN (IR, JSON)
-  params ───────────────────────────────────────►  Runtime (Playwright)
-                                                          │
-                                       all guards pass ───┼──► result
-                                                          │
-                                   guard fails at step k  ▼
-                                                       Healer
-                                    tier 1: alternate locators / fuzzy match (no LLM)
-                                    tier 2: one Claude call to patch step k
-                                    tier 3: scoped Browser Use agent for step k
-                                                          │ patch verified by post-guards
-                                                          ▼
-                                     Program v(N+1) ──► resume compiled at step k+1
+ FIRST RUN (pays the model once)
+ Browser Use agent ──► Recorder ──► step history (+ read / write / irreversible tags)
+                                          │
+                                          ▼
+                                     Compiler (one LLM pass)
+                                          │
+                                          ▼
+ EVERY LATER RUN                   program.yaml  vN
+ params ─────────────────────────► Guarded executor (Playwright, no LLM on the happy path)
+                                          │
+              for each step: resolve → pre-checks → [judge] → act → post-checks → [receipt]
+                                          │
+          ┌───────────────────────────────┼─────────────────────────────────┐
+     all checks pass                read step fails                write / irreversible fails
+          │                               │                                 │
+          ▼                               ▼                                 ▼
+     next step                      Healer: one-step patch           STOP and ask a human
+                                    dry run, same post-check         Slack + approvals queue
+                                      │ pass         │ fail            │ approve        │ reject
+                                      ▼              ▼                 ▼                ▼
+                                 program v(N+1)   STOP and ask     apply / resume    run ends, safe
+                                 + diff, rollback
 ```
+
+## Risk levels
+
+Every step carries one risk level. The risk level decides what happens when a check fails, and that is the core of "fail closed".
+
+| Risk | Examples | On a failed check |
+|---|---|---|
+| `read` | Navigate, open a menu, search, read a table | Heal (one-step repair), then continue |
+| `write` | Submit a form, save a record | **Stop and ask.** Never healed blind. |
+| `irreversible` | Delete, final submit, pay | **Stop and ask.** The judge's default is also to stop. |
+
+The recorder proposes a tag for each step from the action and its target (a submit button counts as `write`, a "Delete" label as `irreversible`), and the compiler pass confirms it. When in doubt, tag upward.
 
 ## Components
 
-### 1. Recorder
+### Recorder (B)
 
-This component wraps a Browser Use `Agent` and hooks every step to capture:
+- Runs one Browser Use agent on a portal and saves its step history with element data. Browser Use records the XPath, accessible name, attributes and a stable hash for each element it touched; it does not store CSS or role selectors, so the compiler derives those.
+- Proposes a risk tag for each step.
+- **Hour-one check:** pin the installed browser-use version and confirm it exposes step history with element data and a rerun method. Run one smoke test.
+- **Model gotcha.** Browser Use's `ChatAnthropic` forces `tool_choice` unless thinking is set, and Claude Opus 5.5 / Sonnet 5.5 reject forced tool choice with HTTP 400. Construct it as `ChatAnthropic(model="claude-opus-5-5", thinking={"type": "adaptive"})` and don't set `temperature`/`top_p`/`seed`.
 
-- the action and its parameters (`click`, `input_text`, `go_to_url`, `select_dropdown_option`, `scroll`, `extract`, etc.)
-- the **target element**: tag, attributes, XPath, accessible role + name, visible text, bounding box, and its neighbors (the label, the parent section heading)
-- the URL before and after the step, an ARIA snapshot of the page (or the target's region) before and after, and a screenshot
-- the agent's stated goal for the step (its `next_goal`/reasoning), which becomes the step's **intent**
-- token usage and latency for the step, which feed the cost comparison
+### Compiler (B)
 
-Output: a `Trace` JSON file saved under `runs/<run_id>/` (this directory is gitignored).
+One LLM pass turns the history into the YAML program. For each step, it produces:
 
-### 2. Compiler
+- an action, and **fallback locators** in order: role + name, text, CSS, XPath;
+- **parameters**: literals from the task become `$variables`, such as `$patient_id`;
+- an **intent** sentence;
+- **pre-checks** and **post-checks**;
+- a **receipt rule** for write steps, and the **risk** level.
 
-This component turns a `Trace` into a `Program`. It runs as a series of passes:
+It also inserts the **two hand-authored branches**: a consent banner that may or may not appear, and an extra confirmation page. We present these as authored by us, not learned.
 
-1. **Normalize.** Drop failed or no-op actions, collapse the agent's mis-click-then-correct sequences, and merge consecutive typing into one action.
-2. **Parameterize.** Find literals that came from the task inputs (the search term, the quantity, the email) and replace them with `{{variables}}`. One LLM call at compile time names the variables and their types.
-3. **Locator synthesis.** For each target, generate ranked locator candidates in this order: `data-testid`, then role + accessible name, then label/placeholder, then text, then stable CSS, then XPath. Check each candidate against the recorded snapshot and keep only those that match exactly one element. Also store a **fingerprint** of the element (role, name, text, attributes, neighbors) so the healer can match it fuzzily later.
-4. **Guard synthesis.**
-   - *Preconditions*: the URL matches a pattern; the target exists, is unique, visible and enabled; the ARIA fingerprint of the region is similar enough to what was recorded.
-   - *Postconditions*: the URL changed as expected; the expected element appeared or disappeared; extracted data matches its schema.
-5. **Branch synthesis.** The compiler emits branches, which is what separates us from linear replay:
-   - *Optional steps*: steps that dismiss popups or cookie banners become `if exists(...)`.
-   - *Loops*: pagination or per-item work becomes `while` / `for_each`.
-   - *Trace merging*: several recorded runs of the same task merge into one control-flow graph that branches on the page state that distinguishes them.
-   - *Learned branches*: when the healer fixes a step, the old path stays as one arm and the new path becomes another (the polymorphic inline cache).
-6. **Intent annotation.** Every step keeps its natural-language intent, for example "Click 'Add to cart' for the selected product". The healer needs this to know what the step was *for*.
+### Guarded executor (A)
 
-### 3. Program IR
+This runs the program on Playwright, following the guard order below for every step, and emits the event stream. It makes no LLM calls on the happy path.
 
-Programs are versioned JSON files, which makes the v1 → v2 diff easy to show on stage. The schema is defined with Pydantic in `engine/`. Here is a trimmed example:
+### Judge (A)
 
-```json
-{
-  "program": "buy-item",
-  "version": 2,
-  "params": { "product": "string", "qty": "integer" },
-  "start_url": "http://localhost:3001/shop",
-  "steps": [
-    {
-      "id": "s1",
-      "intent": "Dismiss the cookie banner if it is shown",
-      "kind": "if",
-      "cond": { "exists": { "role": "button", "name": "Accept all" } },
-      "then": [{ "id": "s1a", "action": "click", "target": { "role": "button", "name": "Accept all" } }]
-    },
-    {
-      "id": "s2",
-      "intent": "Search for the product",
-      "action": "fill",
-      "target": {
-        "candidates": [
-          { "testid": "search-input" },
-          { "role": "searchbox", "name": "Search" },
-          { "css": "input[name=q]" }
-        ],
-        "fingerprint": { "role": "searchbox", "name": "Search", "near": "header" }
-      },
-      "value": "{{product}}",
-      "pre": [{ "url_matches": "^/shop" }, { "target_unique": true }],
-      "post": [{ "url_matches": "^/search" }]
-    }
-  ],
-  "success": { "text_visible": "Order confirmed" },
-  "history": [{ "version": 2, "patched_step": "s5", "reason": "button renamed 'Add to cart' → 'Add to bag'", "tier": 2 }]
-}
+A cheap, fast model that answers one question: *does this element still mean the same as the step's intent?* It is called only:
+
+- on write and irreversible steps, and
+- when a locator still matches but the element's accessible name or structural fingerprint changed.
+
+It returns a structured verdict: `same | different | unsure`. On write and irreversible steps, anything but `same` stops the run.
+
+### Healer (A)
+
+**Contract**, from the build plan:
+
+- **Input:** the step's intent, the failing check, the previous locators, and a trimmed accessibility snapshot of the current page.
+- **Output:** one patched step.
+
+**Procedure:**
+
+1. Run the patch as a dry run. It must pass **the same post-check** that was recorded for the step.
+2. If it passes, the program version goes up, the diff is stored, and the step gets its gold seam in the UI. If it fails, the run stops and asks.
+3. Rollback restores the previous version file.
+
+Write and irreversible steps never reach the healer. When a page change can't be repaired at all, such as a judge's free-form edit, the system falls back to the full Browser Use agent or escalates. In the demo, we present this as designed behavior.
+
+## Guard order for every step
+
+1. **Resolve** the target with the locator list, in order. No match fails the step.
+2. **Deterministic pre-checks:** the URL pattern, the role + accessible name, the structural fingerprint.
+3. **Judge.** If the locator matched but the name or fingerprint changed, ask the judge with the step's intent.
+   - On a read step, a `same` verdict continues.
+   - On a write or irreversible step, the default is to stop and ask.
+4. **Act.**
+5. **Post-checks**, then the **receipt check** for write steps.
+6. **On failure:** read steps go to the healer; write and irreversible steps stop and ask.
+
+## Program format (owner: B, frozen by 14:30)
+
+There is one YAML file per flow. Every accepted repair bumps the version, and every version is kept, so a rollback is a file swap. This example is from the build plan:
+
+```yaml
+program: eligibility-check
+version: 3
+steps:
+  - id: s5
+    intent: "Submit the eligibility request for the selected patient"
+    risk: write                 # read | write | irreversible
+    action: {type: click, target: {role: button, name: "Check eligibility"}}
+    locators: [role_name, text, css, xpath]     # tried in order
+    pre:
+      - url_matches: "/portal-a/eligibility"
+      - element: {role: button, name: "Check eligibility", enabled: true}
+      - fingerprint: "form#elig > fieldset(3) > button[type=submit]"
+    post:
+      - text_visible: "Request received"
+      - receipt: {source: audit_log, match: {action: eligibility_submit, patient: $patient_id}}
+    on_fail: {read: heal, write: stop_and_ask, irreversible: stop_and_ask}
 ```
 
-### 4. Runtime
+The schema still needs these decisions, which are B's call:
 
-The runtime interprets the IR with Playwright and makes **zero LLM calls on the happy path**. For each step it:
+- the top-level `params:` block with types;
+- how a branch is written (*proposal*: `kind: optional` with a `when:` check for the consent banner);
+- where versions live (*proposal*: `programs/eligibility-check/v3.yaml`).
 
-1. evaluates the preconditions,
-2. performs the action,
-3. waits for the page to settle (load state, network idle, or the expected element),
-4. evaluates the postconditions.
+## Interfaces to freeze early
 
-When a guard fails it raises `GuardFailure` with diagnostics (which guard, the expected vs. the actual state, a snapshot, a screenshot), and execution passes to the healer. The runtime streams events (`step_started`, `step_passed`, `guard_failed`, `step_healed`, `run_finished`) to the dashboard over WebSocket and emits a Sentry span for each step.
-
-### 5. Healer (deoptimization)
-
-The healer repairs only the step that broke, and escalates through three tiers, cheapest first:
-
-| Tier | What it does | LLM calls |
+| Interface | Owner | Freeze |
 |---|---|---|
-| 1. Local | Try the other locator candidates, then fuzzy-match the stored fingerprint against the current ARIA tree (similar role, name, text, neighbors). Accept only a single candidate that passes both pre- and postconditions. | 0 |
-| 2. Patch | One Claude call with the step intent, the original fingerprint, the current ARIA snapshot + screenshot and the guard failure. It returns a **structured patch**: a new target, inserted steps (such as a new modal to close), or a new branch arm. | 1 |
-| 3. Agent | A Browser Use agent scoped to "accomplish step k's intent from the current page", with a small `max_steps`. Its sub-trace is compiled into a replacement block. | a few |
+| Audit-log schema | C | 14:00 |
+| Program YAML schema | B | 14:30 |
+| Event stream (JSON lines) | A emits, D consumes | with the executor |
+| Approval API | A + D | before Wow v1 (23:00) |
 
-These rules keep a heal honest:
+### Audit log (*proposal* for C)
 
-- **Verify before committing.** A patch is kept only if the step's postconditions pass, and the run counts as successful only if the program's `success` check passes, so a lucky pass doesn't count.
-- **Version every patch.** Program v(N+1) records the patched step, the reason, and the tier, and the dashboard renders the diff.
-- **Fail loudly.** If all three tiers fail, the run aborts with a report instead of guessing.
-- **Resume compiled.** After a heal, execution continues at step k+1 in compiled mode.
+Each portal appends a row for every submit and shows the `request_id` on screen. The harness and the receipt check read this table directly; the agent's own success report never scores a run.
 
-## Data flow and storage
+```sql
+CREATE TABLE audit (
+  id          INTEGER PRIMARY KEY,
+  portal      TEXT NOT NULL,         -- a | b | c
+  action      TEXT NOT NULL,         -- eligibility_submit | save_draft | delete | ...
+  patient_id  TEXT,
+  request_id  TEXT NOT NULL,
+  payload     TEXT,                  -- JSON of submitted fields
+  mutation    INTEGER,               -- active mutation number, 0 = none
+  run_id      TEXT,                  -- from a header the runner sends, so rows map to runs
+  created_at  TEXT NOT NULL
+);
+```
 
-| What | Where | Committed? |
-|---|---|---|
-| Programs (IR, every version) | `programs/<name>/v<N>.json` | yes, so they can be shown and diffed |
-| Traces, screenshots, snapshots | `runs/<run_id>/` | no (gitignored) |
-| Run metrics (tokens, $, latency, outcome) | SQLite `engine/data.db` | no |
-| Benchmark results | `bench/results/*.json` (final ones are copied into the README) | the final ones only |
+### Event stream (*proposal* for A)
 
-## API (engine, FastAPI)
+The event stream is one JSON object per line. The executor writes it to `runs/<run_id>/events.jsonl` and serves it to the dashboard over server-sent events.
+
+```json
+{"ts": "2026-10-17T21:04:11.2Z", "run_id": "r_042", "program": "eligibility-check", "version": 3,
+ "type": "check_failed", "step": "s5", "risk": "write", "check": "pre.element",
+ "detail": "name changed: 'Check eligibility' -> 'Verify coverage'",
+ "tokens": 0, "usd": 0.0, "trace_id": "…"}
+```
+
+`type` is one of:
+
+- `run_started`, `step_started`, `check_passed`, `check_failed`, `healed`, `stopped`, `approved`, `rejected`, `run_finished`.
+- `healed` carries the diff.
+- `stopped` carries the intent, a screenshot path and the proposed diff, which is everything Slack and the approvals queue need.
+
+### Approval API (*proposal* for A + D)
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/tasks` | Create a task (natural-language goal, param schema, start URL) |
-| `POST` | `/tasks/{id}/record` | Run the Browser Use agent, record the trace, compile program v1 |
-| `POST` | `/programs/{name}/run` | Run the compiled program with params, healing if needed |
-| `POST` | `/programs/{name}/run-llm` | Baseline: run the plain agent with no compilation |
-| `GET` | `/programs/{name}` / `/programs/{name}/versions/{a}..{b}` | Show a program and the diff between versions |
-| `POST` | `/bench` | Run the benchmark matrix |
-| `WS` | `/runs/{id}/events` | Live step events for the dashboard |
+| `GET` | `/stops` | Open stops, with intent, screenshot, proposed diff and trace link |
+| `POST` | `/stops/{id}/approve` | Apply the proposed patch (a new program version) and resume the run |
+| `POST` | `/stops/{id}/reject` | End the run safely; keep the program version |
+| `GET` | `/runs/{id}/events` | The SSE event stream |
+
+## CLI (B)
+
+Run as `python -m browseen <command>` (the entry point is `browseen/__main__.py`).
+
+| Command | Does |
+|---|---|
+| `record <flow>` | Run the Browser Use agent once and save the step history |
+| `compile <history>` | History → `program.yaml` v1 |
+| `run <program> --param k=v` | Guarded replay: heal reads, stop on writes |
+| `doctor <program>` | Dry run: resolve every step and run the pre-checks without acting on writes, then report drift |
+| `heal <program> --step s5` | Run the healer on one step by hand |
+| `rollback <program> [--to vN]` | Restore an earlier version file |
+
+## Tech stack
+
+| Layer | Choice | Notes |
+|---|---|---|
+| Runtime | Python 3.12, Playwright, browser-use | browser-use 0.13.11 is the latest on PyPI (needs Python ≥ 3.11) and drives Chrome over CDP, not Playwright. Playwright 1.64 runs the compiled programs: `get_by_role`, `aria_snapshot()`, `to_match_aria_snapshot()` for guards. |
+| Packaging | `requirements.txt` + a venv | `python -m venv .venv && pip install -r requirements.txt`. Pin versions in `requirements.txt` once they're confirmed in hour one. (The build plan mentions uv; we're staying with `requirements.txt`.) |
+| Models | One thin client around the Anthropic SDK | *Proposal*: `claude-opus-5-5` to compile and heal, `claude-haiku-5-5` as the judge. Log tokens and $ for every call; these feed the cost counters. |
+| Portals | FastAPI + Jinja templates + SQLite | Three layouts from one generator, mutations applied in the template layer, audit table. |
+| Dashboard | React + Vite + Tailwind, SSE | Program view with gold seams, diff view, live counters, approvals queue. |
+| Notifications | Slack incoming webhook | Posts the step intent, screenshot, diff and trace link. |
+| Observability | Sentry Python SDK on the runner, browser SDK on the portals | See below. |
+| Hosting | Local for the demo; Vultr only if time allows | The demo must not depend on it. |
+
+**Repo layout.** This is the build plan's layout with the core code inside the existing `browseen/` package:
+
+```
+browseen/                 # Python package: python -m browseen <command>
+  __main__.py             # CLI entry point (exists)
+  observability.py        # Sentry init (exists)
+  tracing.py              # run / step / LLM span helpers (exists)
+  recorder/  compiler/    # B
+  executor/  guards/  healer/  api.py   # A (api.py: SSE + approval API, shared with D)
+portals/                  # C: a/ b/ c/ mutations.py audit.py
+bench/                    # C: mutations.md config.yaml systems.py run.py report.py
+dashboard/                # D: React + Vite + Tailwind
+programs/                 # compiled YAML programs, one folder per flow, every version kept
+requirements.txt
+README.md
+```
 
 ## Observability (Sentry)
 
-- **Tracing.** Each run is a transaction and each step is a span tagged `mode=compiled|healed|llm`, `program.version`, `guard.result`, `heal.tier`. A heal is visible as one slow span among fast ones.
-- **AI agent monitoring.** LLM calls (the recording run, tier-2 and tier-3 heals) show up as AI spans with model, tokens and cost.
-- **Session Replay.** The testbed sites run the Sentry browser SDK with Replay at 100% sampling and are tagged with the `run_id`, so judges can watch the agent's browser session and the moment the heal happened.
-- The dashboard links each run to its Sentry trace and replay.
+The Sentry challenge requires two or more products beyond error monitoring. We aim for four:
 
-See [tech-stack.md](tech-stack.md#observability--sentry) for which Sentry products count toward the sponsor track.
-
-## Benchmark design
-
-The **modified-page benchmark** is the claim that separates us from linear replay (LOOP, taprun). It has four parts:
-
-- **Tasks.** 5–8 tasks across 2–3 testbed sites: shop checkout, a multi-page form, search-and-extract on a table, a login-gated flow.
-- **Mutations.** A catalog of deterministic page changes, toggled through `?mut=` or the chaos panel:
-
-  | Mutation | Example |
-  |---|---|
-  | Text rename | "Add to cart" → "Add to bag" |
-  | Selector churn | ids and classes changed, `data-testid` removed |
-  | Move / reorder | button moved into a dropdown; field order shuffled |
-  | Wrapper insertion | extra `div`s / shadow root around the target |
-  | Interstitial | a newsletter modal or cookie banner appears |
-  | New required field | the checkout now needs a phone number |
-  | Variant | an A/B layout with the same function and different structure |
-  | Timing | slow load, lazy-rendered list |
-  | Pagination | the item moves to page 2 |
-
-- **Baselines.**
-  1. *LLM every time*: plain Browser Use agent.
-  2. *Linear replay*: recorded selectors with no guards, branches or repair (LOOP-style; also Browser Use's own history rerun, if available).
-  3. *Ours.*
-- **Metrics**, always reported together: verified success rate, $ and tokens per run, wall-clock time, LLM calls per run, heal success rate by tier, and false-pass rate.
+- **Tracing.** One transaction per run and one span per program step. `browseen/tracing.py` already has `run_span`, `step_span`, `mark_healed` and `llm_span`, with span data `run.mode`, `step.index`, `step.action`, `step.target`, `step.healed`. Per the build plan, add `step.id`, `step.risk`, `guard.result`, `step.stopped` and `program.version`, so a judge can open the trace and see which step cracked and what repaired it.
+- **AI agent monitoring.** The Python SDK auto-instruments the Anthropic SDK, so the compiler, judge and healer calls show up as `gen_ai` spans with tokens and cost. Custom ops such as `agent.llm` don't appear in Sentry's Agents view; for anything not auto-instrumented, use `gen_ai.*` ops. Wrap the healer as a `gen_ai.invoke_agent` span so the repair shows as a child agent span.
+- **Session Replay.** Add the Sentry browser SDK to the portals we build, so the agent's clicks are replayable. Replay masks text and inputs by default; on our synthetic portals, turn that off (`maskAllText: false`, `maskAllInputs: false`). Replay can't record third-party sites, which is one more reason the demo stays on our portals.
+- **Logs.** One `sentry_sdk.logger` line per guard decision. On SDK 2.x, `enable_logs=True` is required; `browseen/observability.py` already sets it.
+- **Build log.** Sentry asks how observability shaped the build. Write down real moments as they happen, such as a trace that showed where time went.
