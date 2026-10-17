@@ -3,9 +3,10 @@
   record    run the agent once on a task and save the trace             (B)
   show      print a recorded run, no API calls                          (B)
   compile   recorded run -> program, with one LLM pass (--no-llm: v0)   (B)
-  run       replay a program with new inputs, healing as needed         (A's runtime)
+  run       replay a program with new inputs, healing as needed         (A)
   diff      what changed between two versions of a program              (B)
   rollback  save the next version as a copy of an older one             (B)
+  serve     the run API for the dashboard                               (A)
 
 The entry modules (browseen/__main__.py and friends) call init_sentry() before using this,
 so .env is loaded before browser_use is imported.
@@ -24,7 +25,7 @@ from pathlib import Path
 from browseen import program as P
 from browseen.recorder.trace import load_trace
 
-RUNTIME_MODULE = "browseen.runtime"  # A provides run_program(program, params, *, headless) there
+RUNTIME_MODULE = "browseen.runtime"  # run_program(program, params, *, headless, **options)
 RUNS_DIR = Path("runs")
 
 
@@ -132,7 +133,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         sys.exit(f"The runtime isn't on this branch yet: `run` calls {RUNTIME_MODULE}.run_program(program, params, "
                  "*, headless), which role A is building. Pull A's work, then try again.")
     run_program = importlib.import_module(RUNTIME_MODULE).run_program
-    result = run_program(program, params, headless=args.headless)
+    options = {"programs_dir": args.programs_dir}  # heals are saved next to the program
+    if args.query:
+        options["url_params"] = parse_inputs(args.query)
+    if args.no_heal:
+        options["healing"] = False
+    if args.tiers:
+        options["tiers"] = tuple(int(t) for t in args.tiers.split(","))
+    result = run_program(program, params, headless=args.headless, **options)
     return 0 if getattr(result, "success", result) else 1
 
 
@@ -164,6 +172,15 @@ def cmd_diff(args: argparse.Namespace) -> int:
 def cmd_rollback(args: argparse.Namespace) -> int:
     new = P.rollback(args.program, args.to, args.programs_dir)
     print(f"saved {new.program} v{new.version}, a copy of v{args.to}. Earlier versions are kept.")
+    return 0
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from browseen.api import create_app
+
+    uvicorn.run(create_app(runs_dir=args.runs_dir, programs_dir=args.programs_dir), host=args.host, port=args.port)
     return 0
 
 
@@ -200,6 +217,10 @@ def build_parser(prog: str = "python -m browseen") -> argparse.ArgumentParser:
     run.add_argument("--param", action="append", default=[], metavar="KEY=VALUE")
     run.add_argument("--version", type=int, help="a specific version (default: latest)")
     run.add_argument("--headless", action="store_true")
+    run.add_argument("--query", action="append", default=[], metavar="KEY=VALUE",
+                     help="override a start-URL query parameter, e.g. mut=M04 for a testbed mutation")
+    run.add_argument("--no-heal", action="store_true", help="fail on the first broken step instead of healing")
+    run.add_argument("--tiers", help="healing tiers to try, in order (default 1,2,3), e.g. 1 or 3")
     run.add_argument("--programs-dir", type=Path, default=P.PROGRAMS_DIR)
     run.set_defaults(func=cmd_run)
 
@@ -214,6 +235,13 @@ def build_parser(prog: str = "python -m browseen") -> argparse.ArgumentParser:
     rb.add_argument("--to", type=int, required=True, help="the version to restore")
     rb.add_argument("--programs-dir", type=Path, default=P.PROGRAMS_DIR)
     rb.set_defaults(func=cmd_rollback)
+
+    srv = sub.add_parser("serve", help="start the run API the dashboard calls (dashboard/API_CONTRACT.md)")
+    srv.add_argument("--host", default="127.0.0.1")
+    srv.add_argument("--port", type=int, default=8000)
+    srv.add_argument("--runs-dir", type=Path, default=RUNS_DIR)
+    srv.add_argument("--programs-dir", type=Path, default=P.PROGRAMS_DIR)
+    srv.set_defaults(func=cmd_serve)
     return parser
 
 

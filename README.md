@@ -23,7 +23,7 @@ python -m browseen record 'Buy $qty of $product and check out with name $name, s
   --input product="Blue Wireless Headphones" --input qty=2 --input name="Ada Lovelace" \
   --input address="12 Main St" --input city=Pasadena --input postal=91101 --name storefront-buy
 python -m browseen compile runs/<run_id>          # writes programs/storefront-buy/v1.yaml
-python -m browseen run storefront-buy --param product="Red Kettle" --param qty=1 ...   # A's runtime
+python -m browseen run storefront-buy --param product="Red Kettle" --param qty=1 ... --query mut=M11   # replay + heal
 python -m browseen diff buy-item                  # what a heal changed between versions
 ```
 
@@ -43,10 +43,10 @@ python -m browseen diff buy-item                  # what a heal changed between 
 | Part | Owner | State |
 |---|---|---|
 | Program format (`browseen/program.py`, `programs/`) | B | Real; validate with `python -m browseen.program validate <file>` |
-| Recorder, compiler, CLI (`browseen/recorder/`, `browseen/compiler/`, `browseen/cli.py`) | B | Real. Recorded and compiled on C's storefront; the compiled program replays other products and quantities with 0 LLM calls, and `/__verify` confirms the orders. `run` waits for A's runtime |
-| Runtime, guards, healer, run API | A | Not in the repo yet |
+| Recorder, compiler, CLI (`browseen/recorder/`, `browseen/compiler/`, `browseen/cli.py`) | B | Real. Recorded and compiled on C's storefront; the compiled program replays other products and quantities with 0 LLM calls, and `/__verify` confirms the orders |
+| Runtime, guards, healer, run API (`browseen/runtime/`, `browseen/api.py`) | A | Real. Replays with 0 LLM calls; heals tier 1 (locators and fingerprint), tier 2 (one LLM patch) and tier 3 (Browser Use takeover), verified on the storefront's M01 and M11 mutations, and each heal persists to the next run. `python -m browseen serve` runs the dashboard's API |
 | Testbed sites, mutations, benchmark | C | Not in the repo yet; the catalog is in docs/benchmark.md |
-| Dashboard (`dashboard/`) | D | Works in mock mode on sample runs and fixtures, marked SAMPLE DATA; real mode waits for A's API ([contract](dashboard/API_CONTRACT.md)) |
+| Dashboard (`dashboard/`) | D | Mock mode on sample runs and fixtures (marked SAMPLE DATA); real mode (`VITE_API_MODE=real`) renders real runs, heals and versions from `python -m browseen serve` ([contract](dashboard/API_CONTRACT.md)) |
 | Sentry (`browseen/observability.py`, `browseen/tracing.py`) | D | Tracing, logs and AI agent spans confirmed with synthetic demo runs; Session Replay waits for C's sites ([docs/sentry.md](docs/sentry.md)) |
 
 ## Sentry

@@ -14,8 +14,6 @@ from typing import Any, Callable
 
 from pydantic import BaseModel
 
-from browseen.agent import FALLBACK_MODEL, MODEL
-from browseen.costs import PRICES, usd
 from browseen.program import Check, Program, param_refs, substitute
 from browseen.recorder.trace import Usage
 
@@ -97,44 +95,10 @@ def build_prompt(task: str, inputs: dict[str, Any], contexts: list[StepContext],
 
 def call_claude(system: str, prompt: str) -> LLMResult:
     """One structured-output call. Returns annotation=None (with a note) instead of raising."""
-    import anthropic
+    from browseen.llm import structured_call
 
-    try:
-        response = anthropic.Anthropic().beta.messages.parse(
-            model=MODEL,
-            max_tokens=16000,
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-            output_format=Annotation,
-            output_config={"effort": "medium"},
-            # Server-side fallback: if Opus 5.5 refuses, Anthropic reruns the request on this model.
-            betas=["server-side-fallback-2026-06-01"],
-            fallbacks=[{"model": FALLBACK_MODEL}],
-        )
-    except anthropic.APIConnectionError as e:
-        return LLMResult(None, Usage(), MODEL, f"connection error: {e}")
-    except anthropic.RateLimitError as e:
-        return LLMResult(None, Usage(), MODEL, f"rate limited: {e.message}")
-    except anthropic.APIStatusError as e:
-        return LLMResult(None, Usage(), MODEL, f"API error {e.status_code}: {e.message}")
-
-    u = response.usage
-    tokens = dict(input_tokens=u.input_tokens or 0, output_tokens=u.output_tokens or 0,
-                  cache_read_tokens=u.cache_read_input_tokens or 0,
-                  cache_write_tokens=u.cache_creation_input_tokens or 0)
-    served = response.model if response.model in PRICES else MODEL
-    usage = Usage(llm_calls=1, usd=usd(served, **tokens), **tokens)
-    fallback_ran = any(getattr(entry, "type", None) == "fallback_message" for entry in (getattr(u, "iterations", None) or []))
-    note = f"served by fallback {response.model}" if fallback_ran else ""
-
-    if response.stop_reason == "refusal":
-        category = response.stop_details.category if response.stop_details else "unknown"
-        return LLMResult(None, usage, response.model, f"refused ({category})")
-    if response.stop_reason == "max_tokens":
-        return LLMResult(None, usage, response.model, "output truncated at max_tokens")
-    if response.parsed_output is None:
-        return LLMResult(None, usage, response.model, "no parsable output")
-    return LLMResult(response.parsed_output, usage, response.model, note)
+    result = structured_call(system, prompt, Annotation)
+    return LLMResult(result.parsed, result.usage, result.model, result.note)
 
 
 def apply_annotation(program: Program, annotation: Annotation, final_lines: list[str],

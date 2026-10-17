@@ -63,7 +63,7 @@ def test_run_calls_the_runtime_contract(programs, monkeypatch):
     calls = []
     fake = types.ModuleType("browseen.runtime")
     fake.__spec__ = importlib.machinery.ModuleSpec("browseen.runtime", None)
-    fake.run_program = lambda program, params, *, headless: calls.append((program, params, headless)) or types.SimpleNamespace(success=True)
+    fake.run_program = lambda program, params, *, headless, **options: calls.append((program, params, headless)) or types.SimpleNamespace(success=True)
     monkeypatch.setitem(sys.modules, "browseen.runtime", fake)
 
     assert cli.main(["run", "mini-shop", *PARAMS, "--headless", "--programs-dir", str(programs)]) == 0

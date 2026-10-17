@@ -135,6 +135,17 @@ def _templated(locator: Locator, inputs: dict[str, Any]) -> Locator:
     return Locator(**data)
 
 
+def _stable_first(locators: list[Locator]) -> list[Locator]:
+    """Locators whose text still has a number after templating (a price) go last, before XPath:
+    they only match the recorded item, so replays with other inputs shouldn't depend on them."""
+    def unstable(loc: Locator) -> bool:
+        text = loc.name or loc.text or loc.label or loc.placeholder
+        return bool(text) and not _is_stable(text)
+    by_text = [loc for loc in locators if not loc.xpath]
+    return ([loc for loc in by_text if not unstable(loc)] + [loc for loc in by_text if unstable(loc)]
+            + [loc for loc in locators if loc.xpath])
+
+
 def _intent(k: Kept, role: str | None, name: str | None, action: Action, inputs: dict[str, Any]) -> str:
     label = f"'{templatize(name, inputs)}'" if name else f"the {k.action.element.tag if k.action.element else 'page'}"
     if k.type == "click":
@@ -272,7 +283,7 @@ def compile_trace(trace: Trace, run_dir: Path, name: str,
                 else:
                     role, el_name, candidates = pa.candidates(el)
                     container = pa.container(el.xpath)
-                    locators = [_templated(c.locator, inputs) for c in candidates if c.kept]
+                    locators = _stable_first([_templated(c.locator, inputs) for c in candidates if c.kept])
                     first_literal = next((c.locator for c in candidates if c.kept and not c.locator.xpath), None)
                     report.locators[step_id] = [
                         f"{'✓' if c.kept else '✗'} {c.locator.describe()}"

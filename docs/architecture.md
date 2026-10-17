@@ -184,37 +184,47 @@ The full design, including the LLM pass:
 
 ### Runtime (A)
 
-The runtime interprets the program with Playwright. For each step it:
+**Built** in `browseen/runtime/` (`runner.py`, `checks.py`, `heal.py`). `python -m browseen run` calls `run_program(program, params, *, headless)`, which returns a `RunResult` whose `success` sets the exit code. Options: `healing`, `tiers`, `url_params` (for example `{"mut": "M04"}` for a testbed mutation), `runs_dir`, `programs_dir` and `run_id`.
 
-1. skips the step if its `when` is false;
-2. resolves the target through the locator list;
+For each step, the runtime:
+
+1. skips the step if its `when` is false (checked with a 1 s timeout);
+2. resolves the target through the locator list, polling until the step's timeout;
 3. runs the pre-checks;
-4. performs the action and waits for the page to settle;
+4. acts, then waits for the page to settle;
 5. runs the post-checks.
 
-When the last step is done, it runs the **success check**. The happy path makes **zero LLM calls**.
+After the last step it runs the **success check**. Every check is written to `runs/<run_id>/events.jsonl` (`stage`: when, locate, pre, action, post or success) and logged to Sentry. The happy path makes **zero LLM calls**. A storefront replay takes about 0.7 s.
 
-When a check fails, the runtime raises `GuardFailure`, carrying which check failed, the expected vs. the actual state, a snapshot and a screenshot, and hands the step to the healer.
-
-**One browser per run.** Launch Chromium with a CDP port so that tier 3 can hand the *same* page (with its cookies and cart) to Browser Use, which connects over CDP. Playwright pauses while the agent drives. Verify this in hour one. If it doesn't work, the agent can open its own browser at the current URL with Playwright's saved storage state.
+**One browser per run.** Chromium starts with a CDP port, so tier 3 can hand the *same* tab (its session and cart) to Browser Use. Browser Use attaches with `BrowserSession(cdp_url=…, keep_alive=True)` and calls `stop()` afterwards, which disconnects without closing the runtime's browser.
 
 ### Healer (A)
 
-The healer repairs only the failing step, escalating through three tiers, cheapest first. These are the same tier numbers as `heal.tier` in [sentry.md](sentry.md).
+The healer repairs only the failing step, cheapest tier first. These are the same tier numbers as `heal.tier` in [sentry.md](sentry.md). Every repair is **run on the live page and has to pass the step's own checks** before it's saved as the next version, in templated form.
 
 | Tier | What happens | LLM calls |
 |---|---|---|
-| **1. Local** | Try the step's other locators, then fuzzy-match the stored fingerprint against the current accessibility tree. Accept only a single candidate that passes both pre- and post-checks. | 0 |
-| **2. Patch** | One LLM call. It gets the step's intent, the original fingerprint, the failed check and a trimmed accessibility snapshot (plus a screenshot), and returns a **structured patch**: a new target, steps to insert before this one (such as "close the popup"), or a new branch arm. | 1 |
-| **3. Agent** | A Browser Use agent starts from the current page with the task "accomplish *step k's intent* (overall goal: *task*)". After each agent step, the runtime checks whether a later compiled step's pre-checks pass; as soon as one does, the agent stops, its actions are compiled into a replacement block, and compiled replay resumes. If no step ever matches, the agent finishes the task and its trace is compiled into the rest of the program. | a few |
+| **1. Local** | If a *later* locator worked, it's promoted to first. If none worked, the recorded fingerprint is fuzzy-matched against same-role elements, scoring name similarity, attribute overlap and tag. A single clear winner gets a locator and the step is re-run. | 0 |
+| **2. Patch** | One structured call (`browseen/llm.py`) with the step, the failed check, the page's accessibility snapshot and the program outline. It returns `retarget` (a new locator), `insert_before` (for example "close the popup"), `insert_after` (for example a new confirmation page) or `give_up`. Inserted steps are **optional** (`when: exists`), so they're skipped when the page doesn't need them. For `insert_after`, the step's post-checks move onto the inserted steps. | 1 |
+| **3. Agent** | A Browser Use agent takes over the same tab to finish *this* step. The runtime then resumes at the first later step whose target and pre-checks are present. The agent's clicks and inputs are kept as optional steps: they replace the step if its element was missing, or come after it if only its result was. | a few |
+
+Measured on C's storefront with Red Kettle ×1, every order confirmed by `/__verify`:
+
+| Mutation | What happened | LLM calls | Next run |
+|---|---|---|---|
+| M01 (selector churn) | Tier 1 promoted the role locator | 0 | 0 LLM calls |
+| M11 (flow split) | Tier 2 inserted the optional "Confirm and add to cart" step (about $0.017, 10 s) | 1 | 0 LLM calls, 0.7 s |
+| M11, forced to tier 3 | The agent clicked Confirm on the same tab and its click was kept as `s3a` (about $0.10, 28 s) | 2 | 0 LLM calls |
+| M00 after either heal | The optional step was skipped | 0 | — |
+| M04 (text rename) | No heal needed: the test-id locator survives the rename | 0 | — |
 
 These rules apply at every tier:
 
-- **Verify before saving.** A patch is kept only if the step's post-checks pass, and a run counts as successful only if the success check passes. That prevents lucky passes.
-- **Version every patch.** Program v(N+1) records the step, the tier and the reason, and the dashboard shows the diff. `rollback` restores any earlier version.
-- **Resume compiled.** After a heal, execution continues at the next step in compiled mode, and the next run is free again.
-- **Fail loudly.** If all three tiers fail, the run is marked failed with a report. It is never reported as a success.
-- **No human approval.** The LLM or the agent always handles the repair.
+- **Verify before saving**, as above. A run counts as successful only if the success check passes.
+- **Version every patch.** Program v(N+1) records the step, tier and reason, and the `healed` event carries the diff. If another run already saved that number, the next free one is used. `rollback` restores any version.
+- **Resume compiled.** After a heal, replay continues in compiled mode, and the next run is free again.
+- **Fail loudly.** If every tier fails, the run is marked failed with the step and check that broke.
+- **No human approval.**
 
 ## Interfaces
 
@@ -226,7 +236,7 @@ These rules apply at every tier:
 | Run API | A + D | D (dashboard), C (harness) |
 | Testbed contract | C | Everyone |
 
-### Event stream (*proposal* for A)
+### Event stream (built: `browseen/events.py`)
 
 The event stream is one JSON object per line, written to `runs/<run_id>/events.jsonl` and served to the dashboard over server-sent events:
 
@@ -239,17 +249,26 @@ The event stream is one JSON object per line, written to `runs/<run_id>/events.j
 
 `type` is one of `run_started`, `step_started`, `check_passed`, `check_failed`, `heal_started`, `healed`, `heal_failed`, or `run_finished`. `run_finished` carries the totals: LLM calls, tokens, $, seconds and success.
 
-### Run API (*proposal* for A + D, FastAPI in `browseen/api.py`)
+Two of D's requested fields are included:
+
+- check events carry `stage` (when, locate, pre, action, post or success) and `check`;
+- every event has `input_tokens` / `output_tokens` next to `tokens`.
+
+The recorder writes the same format, with `mode: "llm"` and `version: 0`.
+
+### Run API (built: `browseen/api.py`, `python -m browseen serve`)
+
+It follows [dashboard/API_CONTRACT.md](../dashboard/API_CONTRACT.md). D's dashboard in real mode (`VITE_API_MODE=real`) renders runs, events, heals and versions from it.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/record` | Run the Browser Use agent on a task, record it, and compile program v1 |
-| `POST` | `/programs/{name}/run` | Compiled run with params, healing automatically |
-| `POST` | `/programs/{name}/run-agent` | Baseline: run the plain agent, for the side-by-side counters |
-| `GET` | `/programs` · `/programs/{name}/versions` | List programs and their versions |
-| `GET` | `/programs/{name}/diff?from=1&to=2` | Diff between two versions |
-| `POST` | `/programs/{name}/rollback?to=1` | Restore a version |
-| `GET` | `/runs/{id}/events` | Event stream (SSE) |
+| `GET` | `/runs` · `/runs/{id}/events.jsonl` · `/runs/{id}/events` (SSE) | Runs, newest first, and their events |
+| `POST` | `/programs/{name}/run` | Compiled run in the background. Body: `{"params": {…}, "mutations": ["M11"], "seed": 3}`. Missing params use the recorded examples, and a `run_id` param gets a fresh value. |
+| `POST` | `/programs/{name}/run-agent` | Baseline: the Browser Use agent does the whole task (recorded like a first run) |
+| `GET` | `/programs` · `/programs/{name}/versions` | Programs, and every version as JSON |
+| `POST` | `/programs/{name}/rollback?to=1` | Restore a version (append-only copy) |
+
+`/mutations` and `/benchmarks` belong to C, and `/approvals` only matters if a human gate comes back.
 
 ### Testbed contract (*proposal* for C)
 

@@ -18,6 +18,7 @@ from typing import Any
 
 from browseen.agent import MODEL, make_agent
 from browseen.costs import PRICES, usd
+from browseen.events import EventLog
 from browseen.program import param_refs, substitute
 from browseen.recorder.trace import StepCapture, Trace, Usage, build_trace
 from browseen.tracing import agent_span, record_agent_result, run_span, step_span
@@ -62,40 +63,20 @@ def usage_from_entries(entries: list[Any], default_model: str = MODEL) -> Usage:
     return total
 
 
-class EventLog:
-    """Writes the run as dashboard events (dashboard/src/events.ts), one JSON line each."""
-
-    def __init__(self, path: Path, *, run_id: str, program: str, trace_id: str):
-        self.path, self.run_id, self.program, self.trace_id = path, run_id, program, trace_id
-
-    def emit(self, type: str, *, step: str | None = None, detail: str = "", usage: Usage | None = None,
-             **extra: Any) -> None:
-        usage = usage or Usage()
-        event = {
-            "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-            "run_id": self.run_id, "program": self.program, "version": 0, "mode": "llm",
-            "type": type, "step": step, "tier": None, "detail": detail, "diff": None,
-            "llm_calls": usage.llm_calls, "tokens": usage.tokens, "usd": round(usage.usd, 4),
-            "trace_id": self.trace_id, **extra,
-        }
-        with self.path.open("a") as f:
-            f.write(json.dumps(event) + "\n")
-
-
 def _warn(msg: str) -> None:
     print(f"[recorder] {msg}", file=sys.stderr)
 
 
 async def record(task_template: str, start_url: str, inputs: dict[str, Any] | None = None, *,
                  name: str | None = None, headless: bool = False, max_steps: int = 30,
-                 runs_dir: Path = RUNS_DIR) -> tuple[Trace, Path]:
+                 runs_dir: Path = RUNS_DIR, run_id: str | None = None) -> tuple[Trace, Path]:
     """Run the agent once on `task_template` (filled with `inputs`) and save the trace."""
     inputs = inputs or {}
     if missing := sorted(param_refs(task_template) - set(inputs)):
         raise ValueError(f"task uses {missing} but no --input was given for them")
     task = substitute(task_template, inputs)
 
-    run_id = new_run_id()
+    run_id = run_id or new_run_id()
     run_dir = Path(runs_dir) / run_id
     (run_dir / "html").mkdir(parents=True)
     captures: dict[int, StepCapture] = {}

@@ -10,7 +10,7 @@ params:
   qty:
     type: integer
     example: 2
-    description: Number of units to purchase.
+    description: Number of units of the product to order.
   name:
     type: string
     example: Ada Lovelace
@@ -87,7 +87,7 @@ steps:
   - target_value: $qty
   timeout_ms: 5000
 - id: s3
-  intent: Add the selected quantity of $product to the cart.
+  intent: Add $product to the cart.
   action:
     type: click
   target:
@@ -187,9 +187,9 @@ steps:
     - role: textbox
       name: Street address
       exact: true
+    - css: '#address'
     - placeholder: 123 Maple Street
       exact: true
-    - css: '#address'
     - xpath: /html/body/main/div[2]/form/input[3]
     fingerprint:
       tag: input
@@ -249,9 +249,9 @@ steps:
     - role: textbox
       name: Postal code
       exact: true
+    - css: '#postal'
     - placeholder: '90024'
       exact: true
-    - css: '#postal'
     - xpath: /html/body/main/div[2]/form/div[1]/div[2]/input
     fingerprint:
       tag: input
@@ -275,10 +275,10 @@ steps:
   target:
     locators:
     - role: button
+      name: Place demo order
+    - role: button
       name: Place demo order · $$159.98
       exact: true
-    - role: button
-      name: Place demo order
     - text: Place demo order · $$159.98
       exact: true
     - xpath: /html/body/main/div[2]/form/button
@@ -301,4 +301,4 @@ history:
 - version: 1
   source: compiled
   reason: 'compiled from r_20261017-154943 (compiler v1: 1 LLM pass)'
-  at: '2026-10-17T22:53:49Z'
+  at: '2026-10-17T23:28:34Z'
