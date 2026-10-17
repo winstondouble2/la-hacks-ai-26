@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Browseen · Everyday essentials</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='shop.css') }}">
+</head>
+<body>
+  <header><a class="brand" href="/shop">browseen<span>shop</span></a><nav class="site-nav" aria-label="Main navigation"><a class="active" href="/shop">Shop</a><a href="/test-cases">Test cases</a></nav><span class="demo">Simulated store</span></header>
+  <main>
+    <p class="eyebrow">THE EVERYDAY COLLECTION</p>
+    <h1>Small things.<br>Better days.</h1>
+    <p class="intro">A few thoughtfully chosen essentials for home, work, and everything in between.</p>
+    <form action="/search" method="get" role="search">
+      <label for="search-input">Find your everyday essential</label>
+      <div class="search-row"><input id="search-input" data-testid="search-input" type="search" name="q" aria-label="Search" placeholder="Try Blue Wireless Headphones" value="{{ query }}" maxlength="200"><button type="submit">Search</button></div>
+    </form>
+    <section aria-labelledby="results-heading">
+      <div class="results-header"><h2 id="results-heading">{% if query.strip() %}Results for “{{ query }}”{% else %}The collection{% endif %}</h2><span>{{ products|length }} {% if products|length == 1 %}item{% else %}items{% endif %}</span></div>
+      <div class="products">
+      {% for product in products %}
+        <article data-testid="product-card">
+          <div class="product-art {{ product.id }}" aria-hidden="true">{% if product.id == 'blue-headphones' %}♫{% elif product.id == 'blue-mug' %}☕{% else %}♨{% endif %}</div>
+          <div class="product-info"><h3><a class="product-link" href="{{ url_for('product_detail', product_id=product.id) }}">{{ product.name }}</a></h3><p>{{ product.description }}</p><strong>${{ '%.2f'|format(product.price_cents / 100) }}</strong></div>
+        </article>
+      {% else %}
+        <div class="empty"><h3>No products found</h3><p>Try another product name or <a href="/shop">view the collection</a>.</p></div>
+      {% endfor %}
+      </div>
+    </section>
+  </main>
+  <footer>Browseen demo shop · Synthetic products, no real purchases.</footer>
+</body>
+</html>
