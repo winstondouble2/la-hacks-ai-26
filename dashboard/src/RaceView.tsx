@@ -1,5 +1,5 @@
 import type { RunEvent } from './events'
-import { totalsAt, visibleAt } from './replay'
+import { compareRuns, totalsAt, visibleAt } from './replay'
 
 // Both runs replay on one clock, so the compiled run visibly finishes while
 // the agent is still on its first steps.
@@ -13,10 +13,37 @@ export default function RaceView({
   elapsed: number
 }) {
   const steps = [...new Set([...baseline, ...compiled].map((e) => e.step).filter((s): s is string => !!s))]
+  const b = baseline.length ? totalsAt(baseline, elapsed) : null
+  const c = compiled.length ? totalsAt(compiled, elapsed) : null
+  // Savings only once both runs are complete; partial runs would mislead.
+  const cmp = b?.finished && c?.finished ? compareRuns(b, c) : null
+  const fmt = (v: number | null | undefined, f: (n: number) => string) => (v === null || v === undefined ? '—' : f(v))
   return (
-    <div className="grid gap-6 md:grid-cols-2">
-      <Lane label="First run · agent" events={baseline} steps={steps} elapsed={elapsed} />
-      <Lane label="Compiled replay" events={compiled} steps={steps} elapsed={elapsed} accent />
+    <div className="flex flex-col gap-6">
+      <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        {(
+          [
+            ['Time saved', fmt(cmp?.secondsSaved, (n) => `${n.toFixed(1)} s`), fmt(cmp?.speedup, (n) => `${n.toFixed(1)}× faster`)],
+            ['Tokens', fmt(cmp?.tokenReduction, (n) => `−${Math.round(n * 100)}%`), 'vs the agent run'],
+            ['LLM calls avoided', fmt(cmp?.llmCallsAvoided, String), ''],
+            ['LLM cost saved', fmt(cmp?.llmUsdSaved, (n) => `$${n.toFixed(3)}`), 'model spend only'],
+          ] as const
+        ).map(([label, value, note]) => (
+          <div key={label} className="flex flex-col">
+            <dt className="text-xs font-medium uppercase tracking-[0.12em] text-muted">{label}</dt>
+            <dd className="font-mono text-2xl font-bold tabular-nums">{value}</dd>
+            <dd className="text-xs text-muted">{cmp ? note : 'when both runs finish'}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="grid gap-6 md:grid-cols-2">
+        <Lane label="First run · agent" events={baseline} steps={steps} elapsed={elapsed} />
+        <Lane label="Compiled replay" events={compiled} steps={steps} elapsed={elapsed} accent />
+      </div>
+      <p className="text-xs text-muted">
+        Input and output tokens aren't separate in the event stream yet, so lanes show the total. Outcomes are what each
+        system reported; verification needs the testbed's /__verify.
+      </p>
     </div>
   )
 }
@@ -50,6 +77,11 @@ function Lane({
     seen.filter((e) => e.type === 'check_failed' && !healed.has(e.step)).map((e) => e.step),
   )
   const latest = seen.slice(-7)
+  const finishedEvent = seen.find((e) => e.type === 'run_finished')
+  const current = finishedEvent ? null : seen.filter((e) => e.type === 'step_started').at(-1)?.step
+  const status = !finishedEvent
+    ? current ? `running ${current}` : 'starting'
+    : finishedEvent.success ? 'reported success' : 'stopped / failed'
 
   return (
     <div className="flex min-w-0 flex-col gap-4 border-t-[1.5px] border-ink pt-3">
@@ -58,7 +90,7 @@ function Lane({
           {label}
         </span>
         <span className="font-mono text-xs text-muted tabular-nums">
-          {now.llmCalls} LLM · ${now.usd.toFixed(3)}
+          {now.llmCalls} LLM · {now.tokens.toLocaleString()} tok · ${now.usd.toFixed(3)}
         </span>
       </div>
       <div className="flex items-end gap-3">
@@ -66,11 +98,13 @@ function Lane({
           {now.seconds.toFixed(1)}
           <span className="text-[32px]">s</span>
         </span>
-        {now.finished && (
-          <span className={`mb-1 rounded-full px-2.5 py-1 text-xs font-semibold ${accent ? 'bg-pass text-chart' : 'bg-ink text-chart'}`}>
-            done
-          </span>
-        )}
+        <span
+          className={`mb-1 rounded-full px-2.5 py-1 text-xs font-semibold ${
+            !finishedEvent ? 'border border-ink' : finishedEvent.success ? (accent ? 'bg-pass text-chart' : 'bg-ink text-chart') : 'bg-fail text-chart'
+          }`}
+        >
+          {status}
+        </span>
       </div>
       <div className="flex gap-1" aria-label="Steps completed">
         {steps.map((s) => (

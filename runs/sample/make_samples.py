@@ -1,7 +1,10 @@
 """Writes the dashboard's SAMPLE runs (hand-made, not real):
 
-  runs/sample/events.jsonl        compiled replay of buy-item that heals s4 at tier 2
-  runs/sample-agent/events.jsonl  the slow first run: the Browser Use agent doing the same task
+  runs/sample/events.jsonl          compiled replay of buy-item that heals s4 at tier 2
+  runs/sample-agent/events.jsonl    the slow first run: the Browser Use agent doing the same task
+  runs/sample-heal1/events.jsonl    s4 heals at tier 1 (fallback locator, no LLM)
+  runs/sample-heal3/events.jsonl    tier 1 and 2 fail on s4, a Browser Use agent takes over (tier 3)
+  runs/sample-blocked/events.jsonl  s7 (Place order, a write) fails its pre-check and is not healed
 
 Costs use the claude-opus-5-5 prices from browseen/costs.py (USD per million tokens),
 so the dashboard's dollar counters agree with the rest of the system.
@@ -37,7 +40,8 @@ def write(run_dir: str, run_id: str, trace_id: str, start: datetime, rows: list[
         if typ == "healed":
             e["diff"] = '- role=button[name="Add to cart"]\n+ role=button[name="Add to bag"]'
         if typ == "run_finished":  # totals for the whole run
-            e.update(llm_calls=calls, tokens=tokens, usd=round(cost, 4), seconds=t, success=True)
+            e.update(llm_calls=calls, tokens=tokens, usd=round(cost, 4), seconds=t,
+                     success=not any(r[1] == "heal_failed" for r in rows))
         events.append(json.dumps(e, ensure_ascii=False))
     path = ROOT / run_dir / "events.jsonl"
     path.parent.mkdir(exist_ok=True)
@@ -94,3 +98,62 @@ agent_rows.append((t, "check_passed", None, None, "Agent verifies 'Order confirm
 t += 0.2
 agent_rows.append((t, "run_finished", None, None, "Order confirmed: 2 x Blue Mug. Trace saved for compiling.", 1, A, None))
 write("sample-agent", "r_041", "5b1c0e7a9d2f4c3a8e6b1d0f2a3c4e5f", START, agent_rows)
+
+
+# The same compiled run up to s4, then each scenario diverges.
+def compiled_until_s4(start_version: int = 1) -> list[tuple]:
+    v = start_version
+    return [
+        (0.00, "run_started", None, None, "Compiled run: Blue Mug x 2 for Ada Lovelace", v, C, None),
+        (0.10, "step_started", "s1", None, "Dismiss the cookie banner if one is shown", v, C, None),
+        (0.20, "check_passed", "s1", None, "No cookie banner, optional step skipped", v, C, None),
+        (0.30, "step_started", "s2", None, "Open the product page for Blue Mug", v, C, None),
+        (0.50, "check_passed", "s2", None, 'On /product.html, "Blue Mug" visible', v, C, None),
+        (0.60, "step_started", "s3", None, "Set the quantity to 2", v, C, None),
+        (0.75, "check_passed", "s3", None, "Quantity field holds 2", v, C, None),
+        (0.80, "step_started", "s4", None, "Add the product to the cart", v, C, None),
+    ]
+
+
+def finish_after_s4(t0: float, v: int, detail: str) -> list[tuple]:
+    return [
+        (t0 + 0.10, "step_started", "s5", None, "Enter the customer's full name", v, C, None),
+        (t0 + 0.20, "check_passed", "s5", None, "Full name holds Ada Lovelace", v, C, None),
+        (t0 + 0.25, "step_started", "s6", None, "Enter the shipping address", v, C, None),
+        (t0 + 0.35, "check_passed", "s6", None, "Address holds 1 Main St", v, C, None),
+        (t0 + 0.40, "step_started", "s7", None, "Place the order", v, C, None),
+        (t0 + 0.50, "check_passed", "s7", None, "On /done.html", v, C, None),
+        (t0 + 0.60, "run_finished", None, None, detail, v, C, None),
+    ]
+
+
+# M01 selector churn: the first locator misses, the css fallback still identifies the button.
+write("sample-heal1", "r_043", "a1b2c3d4e5f60718293a4b5c6d7e8f90", START, compiled_until_s4() + [
+    (0.95, "check_failed", "s4", None, 'role=button[name="Add to cart"] not unique after class churn', 1, C, None),
+    (1.00, "heal_started", "s4", 1, "Tier 1: trying fallback locators", 1, C, None),
+    (1.10, "healed", "s4", 1, "Fallback css=#add matched the recorded fingerprint. Post-check passed.", 1, "healed", None),
+] + finish_after_s4(1.10, 1, "Order confirmed: 2 x Blue Mug. No new version (tier 1 heals are not saved)."))
+
+# M10 new required field: no locator fix exists, the agent fills the phone number and clicks.
+write("sample-heal3", "r_044", "b2c3d4e5f60718293a4b5c6d7e8f90a1", START, compiled_until_s4() + [
+    (1.10, "check_failed", "s4", None, "Post-check failed: checkout requires a phone number", 1, C, None),
+    (1.20, "heal_started", "s4", 1, "Tier 1 missed", 1, C, None),
+    (1.40, "heal_started", "s4", 2, "Tier 2 patch rejected by the post-check", 1, C, (8800, 420)),
+    (1.50, "heal_started", "s4", 3, "Tier 3: Browser Use agent takes over s4", 1, C, None),
+    (5.30, "healed", "s4", 3, "Agent filled Phone and added to cart; sub-trace compiled as s4a. Post-check passed.", 2, "healed", (14600, 690)),
+] + finish_after_s4(5.30, 2, "Order confirmed: 2 x Blue Mug. Program v2 saved (inserted s4a)."))
+
+# M16 wrong-target trap on a write step: never heal blind, stop instead.
+blocked = compiled_until_s4() + [
+    (0.95, "check_passed", "s4", None, "On /checkout.html, 2 x Blue Mug in cart", 1, C, None),
+    (1.00, "step_started", "s5", None, "Enter the customer's full name", 1, C, None),
+    (1.10, "check_passed", "s5", None, "Full name holds Ada Lovelace", 1, C, None),
+    (1.15, "step_started", "s6", None, "Enter the shipping address", 1, C, None),
+    (1.25, "check_passed", "s6", None, "Address holds 1 Main St", 1, C, None),
+    (1.30, "step_started", "s7", None, "Place the order", 1, C, None),
+    (1.45, "check_failed", "s7", None, 'Pre-check: "Place order" now opens "Cancel order" (accessible name changed)', 1, C, None),
+    (1.50, "heal_failed", "s7", None, "Write step: not healed automatically; needs approval", 1, C, None),
+]
+write("sample-blocked", "r_045", "c3d4e5f60718293a4b5c6d7e8f90a1b2", START, blocked + [
+    (1.60, "run_finished", None, None, "Stopped before s7. Nothing was submitted.", 1, C, None),
+])
