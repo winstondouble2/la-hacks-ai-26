@@ -47,8 +47,15 @@ export default function App() {
   const finished = events.find((e) => e.type === 'run_finished')
   const healed = events.some((e) => e.type === 'healed')
 
+  // Hand-made data must never pass for a real run, in the demo or at 4am.
+  const sampleRun = runId === 'sample'
+  const examplePrograms = versions.filter((p) => p.history?.some((h) => h.reason?.startsWith('EXAMPLE')))
+
   return (
     <div className="flex min-h-screen flex-col">
+      {(sampleRun || examplePrograms.length > 0) && (
+        <SampleBanner sampleRun={sampleRun} exampleVersions={examplePrograms.map((p) => p.version)} />
+      )}
       <Chrome runId={first?.run_id ?? runId} finished={!!finished} healed={healed} />
       <main className="flex flex-1 flex-col lg:flex-row">
         <aside className="flex flex-col justify-between gap-12 border-ink px-6 py-10 lg:w-[560px] lg:shrink-0 lg:border-r-[1.5px] lg:px-10 lg:pt-12">
@@ -83,6 +90,23 @@ export default function App() {
           {first && <SentryFooter event={events.find((e) => e.type === 'healed') ?? first} />}
         </section>
       </main>
+    </div>
+  )
+}
+
+function SampleBanner({ sampleRun, exampleVersions }: { sampleRun: boolean; exampleVersions: number[] }) {
+  const parts = [
+    sampleRun && 'this run is hand-written sample data (runs/sample)',
+    exampleVersions.length > 0 && `program ${exampleVersions.map((v) => `v${v}`).join(', ')} is an example`,
+  ].filter(Boolean)
+  return (
+    <div
+      role="status"
+      className="flex flex-wrap items-center gap-x-3 gap-y-1 bg-fail px-6 py-2 text-sm text-chart lg:px-10"
+    >
+      <span className="font-mono text-xs font-bold uppercase tracking-[0.14em]">Sample data</span>
+      <span>Not a real run: {parts.join('; ')}.</span>
+      {sampleRun && <span className="opacity-90">Open a real run with ?run=&lt;run_id&gt;.</span>}
     </div>
   )
 }
