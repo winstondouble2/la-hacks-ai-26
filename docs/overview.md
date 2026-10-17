@@ -102,7 +102,7 @@ The full script with fallbacks is in [build_plan.md → Demo script](build_plan.
 |---|---|
 | **Applied Intelligence** (main track) | Enter. The track text names automation and healthcare. |
 | Browser Use, Best Use | Enter. It does the first run, and it is the fallback. |
-| Sentry, Best Use | Enter. Tracing, AI agent monitoring, Session Replay and Logs. |
+| Sentry, Best Use | Enter. Tracing, AI agent monitoring, Session Replay and Logs. Setup and findings log: [sentry.md](sentry.md). |
 | Cognition, Best Use of Devin | Enter **only if** we really use Devin. Keep the sessions as proof. |
 | MLH Commit Fellowship | Enter. It takes a 10-minute form. |
 | Paper, Best Designed Hack / MLH Vultr | Optional |
