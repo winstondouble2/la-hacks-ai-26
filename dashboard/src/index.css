@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+/* Palette from the Paper design: an optician's exam room.
+   White chart, black letters, duochrome red/green, kintsugi gold for heals. */
+@theme {
+  --color-chart: #ffffff;
+  --color-ink: #0e0e10;
+  --color-muted: #6b6b70;
+  --color-rule: #e4e4e6;
+  --color-pass: #1f8a4c;
+  --color-fail: #d7372a;
+  --color-heal: #c9971c;
+  --color-heal-ink: #8a6610;
+  --color-heal-wash: #fbf4e2;
+
+  --font-display: "Bricolage Grotesque", system-ui, sans-serif;
+  --font-sans: "Space Grotesk", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+body {
+  background: var(--color-chart);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+.condensed {
+  font-stretch: 75%;
+}
+
+/* The gold eye blinks now and then: the compiler keeping watch. */
+.eye-heal {
+  transform-origin: center;
+  animation: blink 6s infinite;
+}
+
+@keyframes blink {
+  0%, 94%, 100% { transform: scaleY(1); }
+  97% { transform: scaleY(0.1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eye-heal { animation: none; }
+}
