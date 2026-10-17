@@ -1,182 +1,229 @@
 # Benchmark
 
-What we measure, what we build to measure it, and which numbers we show. This expands [build_plan.md → The benchmark](build_plan.md#the-benchmark); where they disagree, **the build plan wins**.
+What we measure, what we need to build to measure it, and which numbers we show at the demo. The working name is **DriftBench**: browser tasks on websites that change underneath the agent.
 
-> **The headline number is the silent failure rate:** the share of runs that finish and report success while doing the wrong thing. On stage: "Silent failures: baseline *k* of *N*, Browseen *k* of *N*." The benchmark supports the Maria story; it never replaces it.
+> **Why this matters for judging.** The criteria are Technical Depth, Product Thinking & Impact, Execution & Polish, and Originality & Insight. Replaying agent runs isn't new: Browser Use's `rerun_history()`, Workflow Use, taprun and LOOP all do it. The closest prior art, **PreAct**, even compiles runs into guarded programs, but when a check fails it hands the *rest of the task* back to the agent and recompiles everything. Our claim is that we **stay correct when the site changes** and **pay the LLM only for the step that broke**, then resume compiled replay. Only a benchmark on deliberately changed pages can show that.
 
-The benchmark is what a judge can't dismiss as a toy: ten pre-registered page changes, four systems, ground truth from the portal's own audit log, and every cell reported, including the ones where we fail.
+## 1. The claims and the numbers behind them
 
-## 1. What we're testing
+| # | Claim | Headline number | Compared against |
+|---|---|---|---|
+| C1 | Compiled runs are much faster and cheaper | **×N faster, ×M cheaper per run** (median seconds, $ per run), plus the break-even run count | The Browser Use agent run from scratch every time |
+| C2 | We survive page changes | **Verified success rate on changed pages** | Linear replay (`rerun_history()`) |
+| C3 | Healing is cheap | **LLM calls and $ per heal** | One full agent run, and a PreAct-style takeover (the agent finishes the rest of the task) |
+| C4 | A heal sticks | **LLM calls on the next run after a heal** (target: 0) | — |
+| C5 | We don't fake success | **False-pass rate** (target: 0) and **correct-fail rate** on impossible changes | All systems |
 
-**The flow:** the eight-step eligibility check on the synthetic payer portals (see [architecture.md](architecture.md)), with synthetic patients only.
+For the demo slide, pick the strongest number from C1, C2 and C3. C5 answers "how do you know it actually worked?" in Q&A.
 
-**Ground truth:** every portal writes a row to its server-side **audit table** for each submit. The harness reads that table directly. **The agent's own success report never scores a run.**
+For context, prior numbers are thin:
 
-## 2. The ten mutations (pre-registered)
+- **LOOP Skill Engine:** its 93%–99.98% token savings are *modeled*, not measured, and 7.82 s → 0.90 s is from a single 3-step task.
+- **PreAct:** reports 8.5–13× faster replay on AndroidWorld, OSWorld and WebArena.
 
-Every portal reads a mutation number from a query parameter or header and applies it in the template layer, so a mutation is a flag, not a fork. **This list is committed to `bench/mutations.md` before the first benchmark run,** and the README cites that commit.
+We **measure end to end**. C1 should land in that range; C2–C5 are what nobody measures on changing websites.
 
-| # | What changes on the portal | Severity | Silent? | What we expect Browseen to do |
-|---|---|---|---|---|
-| 0 | Nothing (control) | — | — | Replay, 0 LLM calls |
-| 1 | CSS classes and element IDs renamed | 1 | No | Replay unchanged, 0 LLM calls |
-| 2 | Siblings reordered; the button moves position | 1 | No | Replay unchanged via role and name |
-| 3 | Button label renamed ("Check eligibility" → "Verify coverage") | 2 | No | The guard flags it; one-step heal |
-| 4 | Button moves into an overflow menu | 2 | No | One-step heal |
-| 5 | Form wrapped in an iframe | 2 | No | One-step heal |
-| 6 | Consent banner appears | 2 | No | Take the hand-authored branch |
-| 7 | Extra confirmation page inserted | 2 | No | Take the branch, or a one-step heal |
-| 8 | Result table columns reordered | 3 | **Yes**, wrong data | The post-check catches the mismatch; heal or escalate |
-| 9 | Two adjacent buttons swap labels ("Save draft" ↔ "Submit") | 3 | **Yes**, wrong action | The pre-check blocks the write; escalate |
-| 10 | Same label, new meaning ("Archive" becomes "Delete" in the sandbox) | 3 | **Yes**, destructive | The pre-check blocks the write; escalate |
+## 2. Testbed sites
 
-The last column is a **hypothesis, not a result**. We report what actually happens.
+We benchmark **only on sites we control**: changes are deterministic, runs are repeatable, and nothing depends on venue Wi-Fi or a third party. Each site is small (3–6 pages) but has realistic markup: forms, tables, modals, pagination. They are built with FastAPI + Jinja templates + SQLite.
 
-`bench/mutations.md` also records, for each mutation, **whether a stop is the correct response** (yes for 9 and 10; no for 0–2). This label is written before any run, and escalation precision is scored against it (section 4).
-
-## 3. The four systems
-
-| System | What it is | How we label it |
+| Site | Pages | Exercises |
 |---|---|---|
-| **A. Agent every run** | Browser Use drives the whole flow every time. | Browser Use, as is |
-| **B. Blind replay** | Replays the recorded selectors with no checks. | "Our reimplementation of linear replay" |
-| **C. Cache and fall back** | B, plus a full agent rerun after any exception. | "Our reimplementation of the strategy Skyvern, Stagehand and Workflow Use describe." **We don't claim to have benchmarked those products.** |
-| **D. Browseen** | Guards, a one-step heal, stop and ask on writes, receipts. | — |
-| *E (stretch)* | The real Workflow Use or Stagehand on a subset | Only after hour 20 |
+| **Shop** | home → search → product → cart → checkout → confirmation | search, select, quantity, form fill, multi-page flow |
+| **Portal** | login → 3-page application form → review → submitted | login, long forms, dropdowns, dates, validation errors |
+| **CRM** | login → customer table (paginated, filterable) → customer detail → edit | tables, pagination, extraction, editing a record |
 
-Notes:
+Every site provides four test hooks. These are what make the numbers trustworthy:
 
-- Browser Use ships its own linear replay, `rerun_history()` / `load_and_rerun()`. It re-matches elements by hash, then XPath, then accessible name, and it isn't LLM-free: extract steps and a final summary call the model. If B is built on it rather than written from scratch, say so, and count its tokens.
-- In C, the agent finishes the task after a failure, and that is close to how PreAct recovers. D vs. C is the comparison that shows the value of **step-local** repair.
-- **How each system "reports success,"** which the silent-failure metric needs:
-  - A: the agent's final `done` with success.
-  - B: the replay finishes without an exception.
-  - C: either of those.
-  - D: the run finishes without a stop.
+- **`?mut=<ids>&seed=<n>`** (or a header) renders the changed version of the page. The same seed always gives the same page, and the dashboard's chaos panel uses the same IDs.
+- **`POST /__reset`** restores the seed data before every run.
+- **`GET /__verify?task=<id>&params=…`** is **server-side ground truth**: was the order really created with the right item and quantity, was the record really updated? Success is never judged from the agent's own claim or a screenshot.
+- **The Sentry browser SDK with Session Replay**, tagged with the `run_id`, lets us replay any benchmark run, including the moment of a heal.
 
-## 4. Metrics
+## 3. Tasks
 
-Each run ends in **exactly one outcome**, decided from the audit log and the extracted data, never from the system's own claim:
+Each task has a natural-language goal, typed parameters and a verifier. Each one has **2–3 parameter sets**: we record with set A and benchmark with set B, which also checks that parameters work.
 
-| Outcome | Meaning |
+| ID | Site | Goal (with parameters) | Steps | Verifier | Priority |
+|---|---|---|---|---|---|
+| T1 | Shop | Buy `{qty}` of `{product}`, checking out with `{name}` and `{address}` | ~10 | An order exists with the exact item, quantity and address | **core** (the demo task) |
+| T2 | Portal | Log in and submit the application for `{applicant}` | ~15 | The submission record matches every field | **core** |
+| T3 | CRM | Find customer `{name}` and set their status to `{status}` | ~7 | That row is updated and no other rows changed | **core** |
+| T4 | CRM | Extract all invoices over `{amount}` (spans pages) | ~6 + loop | The extracted list equals the ground truth | **core** (tests loops) |
+| T5 | Shop | Apply coupon `{code}` and report the final total | ~6 | The reported total equals the server's total | nice |
+| T6 | Portal | Update the mailing address to `{address}` | ~6 | The profile row is updated | nice |
+| T7 | Shop | Add the cheapest item in `{category}` to the wishlist | ~6 | The wishlist holds the right item | stretch |
+| T8 | CRM | Export the report for `{month}` | ~5 | The export was requested for the right month | stretch |
+
+Task definitions live in `bench/tasks/<id>.yaml`:
+
+```yaml
+id: T1
+site: shop
+goal: "Buy {qty} of '{product}' and check out with name {name} and address {address}"
+start_url: http://localhost:8001/
+params:
+  record: { product: "Blue Mug", qty: 2, name: "Ada Lovelace", address: "1 Main St" }
+  bench:  { product: "Red Kettle", qty: 1, name: "Alan Turing", address: "9 Elm Ave" }
+verify: shop.order_exists
+max_agent_steps: 30
+timeout_s: 180
+```
+
+## 4. Mutations (page changes)
+
+Each mutation is a deterministic change the testbed applies to a page. Severity runs from **L0**, no change, to **L4**, where the task has become impossible.
+
+| ID | Level | Mutation | Example | Replay (our guess) | Browseen (expected tier) |
+|---|---|---|---|---|---|
+| M00 | L0 | none | — | pass | pass, 0 LLM calls |
+| M01 | L1 | Selector churn | `id`s and classes randomized, `data-testid` removed | may survive (XPath / accessible-name re-match) | tier 1 |
+| M02 | L1 | Wrapper insertion | extra `div`s around the target | XPath breaks; may survive by name | tier 1 |
+| M03 | L1 | Sibling reorder | buttons or fields swap DOM order | XPath may hit the **wrong** element | tier 1, with the post-check catching mistakes |
+| M04 | L2 | Text rename | "Add to cart" → "Add to bag" | may survive by XPath if the structure is unchanged | tier 1 fuzzy match or tier 2 |
+| M05 | L2 | Label rename | "Full name" → "Your name" | may survive by XPath | tier 1 or 2 |
+| M06 | L2 | Moved into a menu | the button is now inside a "⋯" dropdown | fail | tier 2 (inserts "open menu") |
+| M07 | L2 | Field order shuffled | the form fields are reordered | wrong-field risk | tier 1 |
+| M08 | L3 | Cookie banner | a banner covers the page on first load | fail (click blocked) | the optional-step branch, or tier 2 adds one |
+| M09 | L3 | Popup | a newsletter modal appears after step 2 | fail | tier 2 (inserts "close popup") |
+| M10 | L3 | New required field | checkout now needs a phone number | fail | tier 3 if the agent can fill it; otherwise the run must **fail loudly** |
+| M11 | L3 | Flow split | one form page becomes two | fail | tier 3 |
+| M12 | L3 | Pagination shift | the target item moves to page 2 | fail | tier 2 or 3 |
+| M13 | L3 | Slow load | content renders after 2–4 s | flaky | the guard waits; 0 LLM calls |
+| M14 | L3 | A/B variant | a different layout with the same function, chosen by seed | fail | tier 2, then **both variants kept as branches** |
+| M15 | L4 | Impossible | the product is out of stock or the feature was removed | may **false-pass** | **must fail loudly** (correct-fail) |
+| M16 | L4 | Wrong-target trap | a decoy button with the old label does something else | **false-pass risk** | the post-check catches it |
+
+The "Replay" column is a guess; the benchmark decides. Browser Use's `rerun_history()` re-matches elements by hash, then XPath, then accessible name, so it will survive some L1 and L2 changes. Where it survives by XPath on a changed page, watch for **wrong-element clicks**: M03, M07 and M16 are designed to expose them.
+
+The design rules for the mutation catalog:
+
+- **Commit the list before the first benchmark run,** and cite that commit in the README.
+- **Dev set vs. held-out set.** Split the mutations into a **dev set**, used while building the healer, and a **held-out set**, written by a teammate who didn't work on the healer and run only at the end. Report both.
+- **Compound cases.** Also run 2–3 mutations at once (for example `M01+M04+M09`), because real redesigns change several things together.
+- **Live judge mutation.** The chaos panel exposes the same IDs, so what a judge triggers live is a case from the benchmark.
+
+## 5. Systems compared
+
+| System | What it is | Why it's included |
+|---|---|---|
+| **Agent** | A plain Browser Use agent run from scratch every time, with the same model | The "LLM every time" cost and speed baseline |
+| **Replay** | Browser Use's built-in `save_history()` + `load_and_rerun(path, variables=…)` | The honest linear-replay baseline. It is **not zero-LLM** (extract steps and a final summary call the model), so we count those tokens. |
+| **Takeover** | Our compiled program, but any failed check hands the **rest of the task** to the full agent, and the new trace is recompiled | The PreAct-style recovery. Comparing it with **Browseen** isolates the value of step-local repair. |
+| **Browseen-T1** | Guards plus tier 1 only, with **no LLM** | Ablation: how much do guards and locator fallbacks alone buy? |
+| **Browseen-T2** | Tiers 1 and 2 | Ablation |
+| **Browseen** | The full system: tiers 1–3 plus branches | The headline system |
+| *(optional)* taprun | `taprun.forge(trajectory=history)` on the same recording | Time-box it to **1 hour**; otherwise just cite it. (Workflow Use is cite-only, because its agent fallback is commented out.) |
+
+The ablations and the Takeover row earn the Technical Depth and Originality points: they show *where* the robustness comes from and *why* per-step repair beats handing the whole task back.
+
+## 6. Metrics
+
+Every run writes one JSON row, and every metric is computed from those rows.
+
+| Metric | Definition |
 |---|---|
-| ✅ **Correct** | Reported success, and the audit log and extracted data match the task |
-| 🟡 **Escalated** | Browseen stopped and asked. **Counted as safe, not as success.** |
-| 🟠 **Loud failure** | Crashed or reported failure, and nothing wrong was written |
-| 🔴 **Silent failure** | Reported success, but the audit log or the data says otherwise (wrong record, missing record, wrong data). **The headline.** |
+| **Verified success** | `/__verify` is true **and** the system reported success |
+| **False pass** | The system reported success but `/__verify` is false. This is the worst outcome. |
+| **Correct fail** | On an L4 mutation, the system reported failure instead of success |
+| **Wall time** | From starting the run to the final verdict (median and p90) |
+| **LLM calls** | Number of model requests in the run |
+| **Tokens and $** | Input, output and cache-read tokens × the pinned price table |
+| **Heals** | For each heal: the step, tier, latency, tokens and $ |
+| **Heal sticks** | On the *next* run against the same mutation, LLM calls = 0 |
+| **Compile cost** | The one-time cost of the recording run plus the compiler's LLM pass. Reported separately and included in the break-even. |
+| **Break-even run count** | Compile cost ÷ (Agent's $ per run − Browseen's $ per run) |
 
-Metrics from the build plan:
+**One row per run** (*proposal*), written to `bench/results/<timestamp>.jsonl`:
 
-| # | Metric | Definition |
-|---|---|---|
-| 1 | **Silent failure rate** (headline) | 🔴 runs ÷ all runs, per system, overall and per severity |
-| 2 | **Correct completion rate** | ✅ runs ÷ all runs |
-| 3 | **Escalations** | 🟡 runs for D |
-| 4 | **False alarms** | Heals or stops by D on mutations 1 and 2 and the control. These cost LLM calls or a human's time for nothing. |
-| 5 | **Cost** | LLM tokens, $ and wall-clock seconds per run |
-| 6 | **Break-even run count** | D's one-time compile cost (the recording run plus the compile pass) ÷ (A's per-run cost − D's per-run cost) |
-| 7 | **Receipt failures caught** | Write steps where the page looked right (the post-check passed) but the audit log had no matching record |
-| 8 | **Escalation precision** | Of D's stops, the share where a stop was the correct response per `bench/mutations.md`. Confirm with B's outcome on the same mutation: did blind replay write the wrong record? |
+```json
+{"run_id": "r_0142", "task": "T1", "mutation": "M04", "seed": 3, "system": "browseen", "repeat": 2,
+ "reported_success": true, "verified": true, "false_pass": false,
+ "wall_s": 3.8, "llm_calls": 1, "input_tokens": 9120, "output_tokens": 410, "cache_read_tokens": 0,
+ "usd": 0.045, "heals": [{"step": "s5", "tier": 2, "latency_s": 2.6, "usd": 0.045}],
+ "program_version_before": 1, "program_version_after": 2,
+ "model": "claude-opus-5-5", "git_sha": "…", "sentry_trace_id": "…"}
+```
 
-**Show counts, not percentages**, for example "4/5". LLM runs are nondeterministic and the trial counts are small.
+## 7. Protocol
 
-## 5. Run plan
+1. **Record once.** For each task, record on M00 with param set A. That gives program v1, and its compile cost is logged.
+2. **Isolated cells.** For each (task × mutation × system), start from a **fresh copy of v1**, so a heal can't leak into another cell. Run with param set B: reset the site, run, verify.
+3. **Repeats.** Run every cell 3 times, because the agent and tier 2/3 are nondeterministic. With small N, **show counts like 3/3, not percentages**.
+4. **Heal-sticks check.** After a cell where Browseen healed, run once more on the same mutation and confirm it makes 0 LLM calls.
+5. **Drift scenario,** for the cost-over-time chart. Run T1 30 times while the site picks up a new mutation every ~5 runs (M00 → M01 → M04 → M09 → M14 → M06). The Agent pays every time; Browseen pays once to record and then a little at each heal.
+6. **Fixed settings.** Use the same model and effort for Agent, Takeover and Browseen, a headless browser, a fixed viewport, local network and fixed timeouts. They all go in `bench/config.yaml` and are logged with every row.
+   - **Model gotcha:** use `ChatAnthropic(model="claude-opus-5-5", thinking={"type": "adaptive"})` for Browser Use; without `thinking` it fails with HTTP 400. Smoke-test one Agent run before the matrix.
+7. **Pinned prices.** $ comes from token counts × a price table in `bench/config.yaml` (Claude Opus 5.5: $4 input / $20 output per million tokens, $0.20 per million for cache reads), so every system is priced the same way.
 
-- **Size:** 10 mutations × 4 systems × 5 trials = **200 runs**, plus **10 unmutated control runs per system**, as in the build plan. Running the same matrix on portals B and C multiplies the count, so do it only if the budget allows.
-- **Isolation:** reset the portal's database before each run. D starts every cell from the **same compiled v1**, so a heal from one mutation can't leak into another cell. Record the version a run ends on.
-- **Persistence check (cheap, worth a line in the README):** after D heals a cell, run it once more on the same mutation. It should make 0 LLM calls.
-- **Caps first:**
-  - set a **dollar cap** and a **step cap** before starting;
-  - A is the expensive column, so measure one A run's cost before sizing anything;
-  - cache compile outputs, and spread API keys across teammates if rate-limited.
-- **Parallelism:** run trials in parallel, one portal instance and one browser per worker.
-- **Fixed settings:** the same models and effort for every system, a headless browser, a fixed viewport, and local network. All of these go in `bench/config.yaml` and are logged with every row.
+## 8. Budget
 
-## 6. What to build
-
-The folders follow the build plan's layout:
+Nearly all of the LLM spend comes from the **Agent** and **Takeover** systems and the recording runs. Replay is cheap, and Browseen is free unless it heals.
 
 ```
-portals/                 # C: FastAPI + Jinja + SQLite, three layouts from one generator
-  a/ b/ c/
-  mutations.py           # mutation number (query param / header) → template changes
-  audit.py               # audit table + helpers the harness reads
+agent_cost ≈ tasks × mutations_run_for_agent × repeats × cost_per_agent_run
+```
+
+- **Measure `cost_per_agent_run` on T1 first.** Don't guess it.
+- The Agent barely depends on the mutation, so run it on **M00 plus 4 representative mutations** (M04, M09, M14, M15) instead of the whole list.
+- **Cache Agent results** by (task, mutation, seed, model, git sha), so re-running the report never pays for them again.
+- Set a **hard budget cap** in the config (for example `budget_usd: 75`). Once it's reached, the runner stops starting new Agent or Takeover runs.
+
+For example, the core set is 4 tasks × 5 mutations × 3 repeats = **60 Agent runs**. Replay and Browseen on all ~17 mutations plus the compound cases cost only the heals.
+
+## 9. What to build
+
+```
+testbed/                     # C: shop/, portal/, crm/ (FastAPI + Jinja + SQLite)
+  mutations.py               # mutation IDs → template changes; also used by the chaos panel
 bench/
-  mutations.md           # the pre-registered list + "correct response" labels (commit first!)
-  config.yaml            # models, prices, caps, trials, timeouts
-  systems.py             # adapters for A, B, C, D (and E if it ever happens)
-  run.py                 # matrix runner → results JSONL
-  report.py              # results → heatmap, headline number, tables for README / Devpost
+  config.yaml                # model, prices, timeouts, budget cap, repeats
+  tasks/T1.yaml …            # task definitions (section 3)
+  mutations.yaml             # catalog + dev / held-out split (section 4)
+  systems.py                 # adapters: agent, replay, takeover, browseen-t1, browseen-t2, browseen
+  run.py                     # matrix runner → results/*.jsonl
+  report.py                  # results → tables, charts, dashboard JSON
+  results/                   # final result files we commit for the write-up
 ```
-
-**The portal must provide:**
-
-- the mutation switch;
-- the audit table;
-- a reset endpoint or script;
-- a `run_id` header, or another way to tie audit rows to runs;
-- the Sentry browser SDK with Session Replay, so any benchmark run can be replayed.
-
-**The runner must be:**
-
-- **resumable:** it skips cells that already have rows, so a crash at 3 AM costs nothing;
-- **fail-safe:** an exception becomes a 🟠 row, and the matrix keeps going;
-- **capped:** it stops starting new A or C runs once the dollar cap is reached;
-- **traced:** each run is a Sentry trace tagged `system`, `mutation`, `trial`.
 
 Runner and report commands:
 
 ```bash
-python -m bench.run --systems A,B,C,D --mutations 0-10 --trials 5
+python -m bench.run --tasks T1,T2,T3,T4 --mutations dev --systems agent,replay,takeover,browseen-t1,browseen-t2,browseen --repeats 3
 ```
 
 ```bash
-python -m bench.report bench/results/latest.jsonl
+python -m bench.report bench/results/latest.jsonl --out bench/results/report
 ```
 
-**One result row per run** (*proposal*):
+The runner must:
 
-```json
-{"run_id": "r_0142", "system": "D", "mutation": 9, "trial": 3, "portal": "a",
- "reported_success": false, "outcome": "escalated",
- "audit_rows": [], "expected_rows": 1, "receipt_failures_caught": 0,
- "heals": 0, "stops": 1, "stop_correct": true,
- "llm_calls": 1, "input_tokens": 2140, "output_tokens": 38, "usd": 0.0004, "wall_s": 2.9,
- "program_version": 1, "models": {"judge": "claude-haiku-5-5"}, "git_sha": "…", "sentry_trace_id": "…"}
-```
+- **Be resumable.** It skips cells that already have rows, so a crash at 4 AM costs nothing.
+- **Keep going.** An exception in one run becomes a failed row, and the matrix continues.
+- **Trace everything.** Each run is a Sentry trace tagged `task`, `mutation` and `system`, so a slow or broken cell opens straight in Sentry.
 
-## 7. What we show
+## 10. What we show
 
-| Output | Where |
-|---|---|
-| **Headline:** "Silent failures: baseline *k*/*N*, Browseen *k*/*N*" | Demo at 2:10, Devpost, README |
-| **Heatmap:** mutations (rows) × systems (columns). Each cell shows outcome counts like "4/5", colored by outcome. | Demo slide, Devpost |
-| Escalation precision + false alarms | Q&A: "how do you know a stop was the right call?" |
-| Receipt failures caught | Q&A: "taprun's doctor already checks things" |
-| Cost and time per run, and the break-even run count | Q&A: "do the savings hold up?" Only our own numbers. |
-| The live split screen on mutation 9 | Demo at 1:25: the same harness, run live |
+| Output | Chart | Used in |
+|---|---|---|
+| Headline numbers | Three big numbers, one each from C1, C2 and C3 | Demo slide, Devpost, README |
+| Success under change | Grouped bars: verified success by severity level (L0–L4) × system | Demo, Devpost |
+| Cost and speed per run | Bars on a log scale: Agent run vs. compiled run vs. compiled run with a heal | Demo |
+| **Cost over time** | Line chart: cumulative $ over 30 runs while the site changes. Agent climbs steadily; Browseen is a step at recording plus small bumps at heals. Mark the break-even run. | **Demo centerpiece** |
+| Where robustness comes from | Ablation table: Browseen-T1 / T2 / full × success | Q&A, Devpost |
+| Per-step repair vs. takeover | Bars: LLM calls, $ and seconds per recovery, Browseen vs. Takeover | Q&A: "how is this different from PreAct?" |
+| Honesty | False-pass and correct-fail rates for every system; held-out vs. dev success | Q&A |
 
-## 8. Honesty rules (from the build plan)
+The dashboard's live counters (tokens, $, seconds, LLM calls) use the same definitions as these charts, so the live demo and the charts agree.
 
-- Commit the mutation list before the first run, and cite that commit in the README.
-- Report every cell, including the ones where Browseen fails.
-- Let the judge pick a mutation live, from the same list.
-- These are targets, not promises:
-  - mutations 1 and 2 cost no LLM calls;
-  - most severity-2 changes heal in one step;
-  - severity 3 produces zero silent failures.
+## 11. Threats to validity (say them before judges do)
 
-  If the numbers come out worse, that is still the story.
-- Quote outside figures only as context, naming their domain.
+- **We built the testbed.** The held-out mutations were written by someone who didn't build the healer, the mutation list is committed before the first run, judges pick mutations live, and we report every cell, including the failures.
+- **Small N.** A few tasks with 3 repeats each. We present this as evidence, not a paper.
+- **LLM nondeterminism.** We run repeats and show counts.
+- **Synthetic sites.** The markup patterns are realistic but it isn't the real web. Optionally, a no-mutation sanity run on 1–2 public read-only sites shows cost and latency there (respecting their terms, and no CAPTCHAs).
+- **Prices change.** We publish token counts as well as dollars.
 
-## 9. Milestones (aligned with the build plan's 24-hour plan)
+## 12. If we're short on time
 
-| When | Benchmark milestone |
-|---|---|
-| Sat 14:00 | Audit-log schema frozen; mutation list frozen and committed |
-| Sat 16:00 (**gate**) | Portal A with the mutation switch; one severity-2 mutation (3) healed with a passing post-check |
-| Sat 20:00 | Mutations 1, 3 and 9 in the harness |
-| Sat 23:00 | The split screen runs on mutation 9 (Wow v1) |
-| Sun 02:00 | All ten mutations × systems A–D end to end at a small trial count; overnight runs start |
-| Sun 05:00 | The full benchmark runs under the dollar cap; fix only the top failure causes |
-| Sun 07:30 | Real numbers in the README and Devpost; heatmap frozen |
+Cut to the minimum viable benchmark: **T1 and T3; mutations M00, M01, M04, M09, M14 and M15; systems Agent, Replay, Takeover and Browseen; 3 repeats.** That still supports C1, C2, C3 and C5.
