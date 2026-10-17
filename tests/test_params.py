@@ -21,6 +21,13 @@ def test_longest_value_wins_and_placeholders_are_not_rescanned():
     assert templatize("Blue Mug", inputs) == "$product"  # "rod" doesn't hit the inserted "$product"
 
 
+def test_braces_when_a_letter_follows_the_placeholder():
+    # The storefront renders "<name><small>Qty 2</small>" as "Blue Wireless HeadphonesQty 2".
+    inputs = {"product": "Blue Wireless Headphones", "qty": 2}
+    assert templatize("Blue Wireless HeadphonesQty 2", inputs) == "${product}Qty $qty"
+    assert templatize("Blue Wireless Headphones · 2", inputs) == "$product · $qty"
+
+
 def test_mentions_input_ignores_short_values():
     assert mentions_input("2 × Blue Mug", INPUTS)
     assert not mentions_input("Page 2", INPUTS)
@@ -28,6 +35,17 @@ def test_mentions_input_ignores_short_values():
 
 def test_param_types():
     assert [param_type(v) for v in (2, 1.5, True, "x")] == ["integer", "number", "boolean", "string"]
+
+
+def test_url_pattern_generalizes_item_slugs_and_ids():
+    inputs = {"product": "Blue Wireless Headphones", "qty": 2}
+    slug = url_pattern("http://127.0.0.1:8001/products/blue-headphones?run_id=rec-1", inputs)
+    assert slug == r"/products/[^/?#]+(\?|#|$)"
+    assert re.search(slug, "http://127.0.0.1:8001/products/red-kettle?run_id=x")
+    assert not re.search(slug, "http://127.0.0.1:8001/cart?run_id=x")
+    assert url_pattern("http://x/orders/12345", inputs) == r"/orders/[^/?#]+(\?|#|$)"
+    assert url_pattern("http://x/checkout", inputs) == r"/checkout(\?|#|$)"
+    assert url_pattern("http://localhost:8765/product.html?id=blue-mug", INPUTS) == r"/product\.html(\?|#|$)"
 
 
 def test_url_pattern_matches_the_same_path_only():

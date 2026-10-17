@@ -1,0 +1,304 @@
+program: storefront-buy
+version: 1
+task: Buy $qty of $product and check out with name $name, street address $address, city $city and postal code $postal
+start_url: http://127.0.0.1:8001/shop?mut=M00&seed=7&run_id=$run_id
+params:
+  product:
+    type: string
+    example: Blue Wireless Headphones
+    description: Name of the product to buy, as shown in the shop listing.
+  qty:
+    type: integer
+    example: 2
+    description: Number of units to purchase.
+  name:
+    type: string
+    example: Ada Lovelace
+    description: Full name of the person receiving the order.
+  address:
+    type: string
+    example: 12 Main St
+    description: Street address for delivery.
+  city:
+    type: string
+    example: Pasadena
+    description: City for delivery.
+  postal:
+    type: integer
+    example: 91101
+    description: Postal code for delivery.
+  run_id:
+    type: string
+    example: rec-154942
+    description: Identifier of the recorded run; not used by any step.
+steps:
+- id: s1
+  intent: Open the product page for $product from the shop.
+  action:
+    type: click
+  target:
+    locators:
+    - role: link
+      name: $product
+      exact: true
+    - xpath: /html/body/main/section[2]/div[3]/article[1]/h3/a
+    fingerprint:
+      tag: a
+      role: link
+      name: Blue Wireless Headphones
+      attributes:
+        href: /products/blue-headphones?run_id=rec-154942
+      xpath: /html/body/main/section[2]/div[3]/article[1]/h3/a
+  pre:
+  - url_matches: /shop(\?|#|$)
+  - target_unique: true
+  - target_enabled: true
+  post:
+  - url_matches: /products/[^/?#]+(\?|#|$)
+  - text_visible: $product
+  timeout_ms: 5000
+- id: s2
+  intent: Set the quantity to $qty.
+  action:
+    type: select
+    value: $qty
+  target:
+    locators:
+    - label: Quantity
+      exact: true
+    - role: combobox
+      name: Quantity
+      exact: true
+    - css: '#quantity'
+    - xpath: /html/body/main/section[1]/div[2]/div[2]/form[1]/div/select
+    fingerprint:
+      tag: select
+      role: combobox
+      name: Quantity
+      attributes:
+        id: quantity
+        name: quantity
+        aria-label: Quantity
+      xpath: /html/body/main/section[1]/div[2]/div[2]/form[1]/div/select
+  pre:
+  - url_matches: /products/[^/?#]+(\?|#|$)
+  - target_unique: true
+  post:
+  - target_value: $qty
+  timeout_ms: 5000
+- id: s3
+  intent: Add the selected quantity of $product to the cart.
+  action:
+    type: click
+  target:
+    locators:
+    - testid: add-to-cart
+    - role: button
+      name: Add to cart
+      exact: true
+    - text: Add to cart
+      exact: true
+    - css: '#add-to-cart'
+    - xpath: /html/body/main/section[1]/div[2]/div[2]/form[1]/div/button
+    fingerprint:
+      tag: button
+      role: button
+      name: Add to cart
+      attributes:
+        id: add-to-cart
+        data-testid: add-to-cart
+      xpath: /html/body/main/section[1]/div[2]/div[2]/form[1]/div/button
+  pre:
+  - url_matches: /products/[^/?#]+(\?|#|$)
+  - target_unique: true
+  - target_enabled: true
+  post:
+  - url_matches: /cart(\?|#|$)
+  - text_visible: $product
+  timeout_ms: 5000
+- id: s4
+  intent: Proceed from the cart to checkout.
+  action:
+    type: click
+  target:
+    locators:
+    - role: link
+      name: Continue to checkout
+      exact: true
+    - text: Continue to checkout
+      exact: true
+    - css: a[href="/checkout?run_id=rec-154942"]
+    - xpath: /html/body/main/div/aside/a
+    fingerprint:
+      tag: a
+      role: link
+      name: Continue to checkout
+      attributes:
+        href: /checkout?run_id=rec-154942
+      xpath: /html/body/main/div/aside/a
+  pre:
+  - url_matches: /cart(\?|#|$)
+  - target_unique: true
+  - target_enabled: true
+  post:
+  - url_matches: /checkout(\?|#|$)
+  - text_visible: $product
+  timeout_ms: 5000
+- id: s5
+  intent: Enter $name as the full name for delivery.
+  action:
+    type: fill
+    value: $name
+  target:
+    locators:
+    - label: Full name
+      exact: true
+    - role: textbox
+      name: Full name
+      exact: true
+    - placeholder: Alex Taylor
+      exact: true
+    - css: '#full-name'
+    - xpath: /html/body/main/div[2]/form/input[2]
+    fingerprint:
+      tag: input
+      role: textbox
+      name: Full name
+      attributes:
+        id: full-name
+        name: name
+        placeholder: Alex Taylor
+      xpath: /html/body/main/div[2]/form/input[2]
+  pre:
+  - url_matches: /checkout(\?|#|$)
+  - target_unique: true
+  post:
+  - target_value: $name
+  timeout_ms: 5000
+- id: s6
+  intent: Enter $address as the street address.
+  action:
+    type: fill
+    value: $address
+  target:
+    locators:
+    - label: Street address
+      exact: true
+    - role: textbox
+      name: Street address
+      exact: true
+    - placeholder: 123 Maple Street
+      exact: true
+    - css: '#address'
+    - xpath: /html/body/main/div[2]/form/input[3]
+    fingerprint:
+      tag: input
+      role: textbox
+      name: Street address
+      attributes:
+        id: address
+        name: address
+        placeholder: 123 Maple Street
+      xpath: /html/body/main/div[2]/form/input[3]
+  pre:
+  - url_matches: /checkout(\?|#|$)
+  - target_unique: true
+  post:
+  - target_value: $address
+  timeout_ms: 5000
+- id: s7
+  intent: Enter $city as the city.
+  action:
+    type: fill
+    value: $city
+  target:
+    locators:
+    - label: City
+      exact: true
+    - role: textbox
+      name: City
+      exact: true
+    - placeholder: Los Angeles
+      exact: true
+    - css: '#city'
+    - xpath: /html/body/main/div[2]/form/div[1]/div[1]/input
+    fingerprint:
+      tag: input
+      role: textbox
+      name: City
+      attributes:
+        id: city
+        name: city
+        placeholder: Los Angeles
+      xpath: /html/body/main/div[2]/form/div[1]/div[1]/input
+  pre:
+  - url_matches: /checkout(\?|#|$)
+  - target_unique: true
+  post:
+  - target_value: $city
+  timeout_ms: 5000
+- id: s8
+  intent: Enter $postal as the postal code.
+  action:
+    type: fill
+    value: $postal
+  target:
+    locators:
+    - label: Postal code
+      exact: true
+    - role: textbox
+      name: Postal code
+      exact: true
+    - placeholder: '90024'
+      exact: true
+    - css: '#postal'
+    - xpath: /html/body/main/div[2]/form/div[1]/div[2]/input
+    fingerprint:
+      tag: input
+      role: textbox
+      name: Postal code
+      attributes:
+        id: postal
+        name: postal
+        placeholder: '90024'
+      xpath: /html/body/main/div[2]/form/div[1]/div[2]/input
+  pre:
+  - url_matches: /checkout(\?|#|$)
+  - target_unique: true
+  post:
+  - target_value: $postal
+  timeout_ms: 5000
+- id: s9
+  intent: Place the order to complete checkout.
+  action:
+    type: click
+  target:
+    locators:
+    - role: button
+      name: Place demo order · $$159.98
+      exact: true
+    - role: button
+      name: Place demo order
+    - text: Place demo order · $$159.98
+      exact: true
+    - xpath: /html/body/main/div[2]/form/button
+    fingerprint:
+      tag: button
+      role: button
+      name: Place demo order · $159.98
+      xpath: /html/body/main/div[2]/form/button
+  pre:
+  - url_matches: /checkout(\?|#|$)
+  - target_unique: true
+  - target_enabled: true
+  post:
+  - url_matches: /order(\?|#|$)
+  - text_visible: $name
+  timeout_ms: 5000
+success:
+- text_visible: Thanks, $name. Your demo order is confirmed.
+history:
+- version: 1
+  source: compiled
+  reason: 'compiled from r_20261017-154943 (compiler v1: 1 LLM pass)'
+  at: '2026-10-17T22:53:49Z'

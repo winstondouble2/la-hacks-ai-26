@@ -3,7 +3,8 @@
 One YAML file per version: programs/<name>/v<N>.yaml. Versions are append-only, so a
 rollback is just loading an older file. B owns this format; tell A and D before changing it.
 
-Parameters: any string may contain $name (declared under `params`); $$ is a literal $.
+Parameters: any string may contain $name or ${name} (declared under `params`); $$ is a literal $.
+Use ${name} when the placeholder is directly followed by a letter or digit ("${product}Qty").
 Call Program.resolved(params) once per run to get a copy with them substituted.
 
   python -m browseen.program validate programs/buy-item/v1.yaml
@@ -25,7 +26,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 PROGRAMS_DIR = Path("programs")
-PARAM_RE = re.compile(r"\$(\$|[A-Za-z_][A-Za-z0-9_]*)")
+PARAM_RE = re.compile(r"\$(?:(\$)|\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")  # $$, ${name}, $name
 
 
 class _Model(BaseModel):
@@ -269,7 +270,7 @@ def _strings(obj: Any) -> Iterator[str]:
 
 
 def _param_refs(obj: Any) -> set[str]:
-    return {m.group(1) for s in _strings(obj) for m in PARAM_RE.finditer(s) if m.group(1) != "$"}
+    return {m.group(2) or m.group(3) for s in _strings(obj) for m in PARAM_RE.finditer(s) if not m.group(1)}
 
 
 def _as_text(value: Any) -> str:
@@ -288,7 +289,7 @@ def substitute(text: str, values: dict[str, Any]) -> str:
 
 def _substitute(obj: Any, values: dict[str, str]) -> Any:
     if isinstance(obj, str):
-        return PARAM_RE.sub(lambda m: "$" if m.group(1) == "$" else values[m.group(1)], obj)
+        return PARAM_RE.sub(lambda m: "$" if m.group(1) else values[m.group(2) or m.group(3)], obj)
     if isinstance(obj, dict):
         return {k: _substitute(v, values) for k, v in obj.items()}
     if isinstance(obj, list):

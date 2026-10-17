@@ -36,7 +36,7 @@ def parse_inputs(pairs: list[str]) -> dict[str, str | int | float]:
         key, sep, raw = pair.partition("=")
         if not sep or not key:
             raise ValueError(f"expected key=value, got {pair!r}")
-        if re.fullmatch(r"-?\d+", raw):
+        if re.fullmatch(r"-?\d+", raw) and not re.fullmatch(r"-?0\d+", raw):  # keep "02134" a string
             inputs[key] = int(raw)
         elif re.fullmatch(r"-?\d+\.\d+", raw):
             inputs[key] = float(raw)
@@ -120,7 +120,7 @@ async def record(task_template: str, start_url: str, inputs: dict[str, Any] | No
         except Exception as e:  # a capture failure must never break the run
             _warn(f"step {n}: no before-HTML ({e})")
         hook_state["usage_seen"] = len(agent.token_cost_service.usage_history)
-        span_cm = step_span(n, "agent", "llm")
+        span_cm = step_span(n, "agent", "llm", step_id=f"a{n}")
         hook_state["span"] = (span_cm, span_cm.__enter__())
 
     async def after_step(agent) -> None:

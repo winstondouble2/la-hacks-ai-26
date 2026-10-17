@@ -72,6 +72,20 @@ def test_compile_run_saves_and_refuses_an_existing_program(tmp_path):
         compile_run(RUN, "mini-shop", tmp_path)
 
 
+def test_start_url_inputs_become_params_but_are_not_used_as_check_text(tmp_path):
+    run = tmp_path / "run"
+    shutil.copytree(RUN, run)
+    trace = load_trace(run)
+    trace.start_url = "http://localhost:8765/?run_id=rec-abc123"
+    trace.inputs["run_id"] = "rec-abc123"  # not in the task text, like the storefront's session id
+    program, _ = compile_trace(trace, run, "mini-shop")
+    assert program.start_url == "http://localhost:8765/?run_id=$run_id"
+    assert program.success == [P.Check(text_visible="Order confirmed: $qty × $product")]
+    resolved = program.resolved({"product": "Red Kettle", "qty": 1, "name": "Alan Turing", "address": "9 Elm Ave",
+                                 "run_id": "replay-7"})
+    assert resolved.start_url == "http://localhost:8765/?run_id=replay-7"
+
+
 def test_normalize_drops_failures_merges_inputs_and_skips_no_op_clicks(tmp_path):
     run = tmp_path / "run"
     shutil.copytree(RUN, run)
@@ -90,3 +104,26 @@ def test_normalize_drops_failures_merges_inputs_and_skips_no_op_clicks(tmp_path)
     assert (2, "superseded by a later input into the same field") in reasons
     assert (5, "the click changed nothing (a mis-click)") in reasons
     assert [k.action.params.get("text") for k in kept if k.type == "fill"][0] == "3"
+
+
+def test_check_text_avoids_prices_that_change_with_the_inputs():
+    from browseen.compiler.compile import _check_text
+
+    inputs = {"product": "Blue Wireless Headphones", "qty": 2}
+    assert _check_text(["Blue Wireless HeadphonesQty 2$159.98"], inputs, inputs) == "$product"
+    assert _check_text(["Blue Wireless HeadphonesQty 2$159.98", "Blue Wireless Headphones · 2"], inputs, inputs) == "$product · $qty"
+    assert _check_text(["Nothing here"], inputs, inputs) is None
+
+
+def test_price_free_role_locator():
+    from browseen.compiler.locators import PageAnalyzer, name_core
+    from browseen.recorder.trace import TraceElement
+
+    assert name_core("Place demo order · $159.98") == "Place demo order"
+    assert name_core("Cart (2)") == "Cart" and name_core("Add to cart") is None
+    el = TraceElement(tag="button", attributes={}, xpath="/html/body/form/button", ax_name="Place demo order · $159.98")
+    with PageAnalyzer() as pa:
+        pa.load("<html><body><form><button>Place demo order · $159.98</button></form></body></html>")
+        _, _, candidates = pa.candidates(el)
+    kept = [c.locator for c in candidates if c.kept]
+    assert P.Locator(role="button", name="Place demo order") in kept

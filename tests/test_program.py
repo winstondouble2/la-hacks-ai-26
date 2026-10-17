@@ -74,6 +74,15 @@ def test_dollar_dollar_is_a_literal_dollar():
     assert r.step("s2").post[1].text_visible == "$12"
 
 
+def test_braced_params():
+    assert P.param_refs("${product}Qty $qty, $$5") == {"product", "qty"}
+    assert P.substitute("${product}Qty $qty, $$5", {"product": "Red Kettle", "qty": 1}) == "Red KettleQty 1, $5"
+    data = example_data()
+    data["steps"][1]["post"][1] = {"text_visible": "${product}Qty $qty"}
+    r = P.Program.model_validate(data).resolved(PARAMS)
+    assert r.step("s2").post[1].text_visible == "Red KettleQty 1"
+
+
 def test_locator_needs_exactly_one_kind():
     with pytest.raises(ValidationError):
         P.Locator()

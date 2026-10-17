@@ -109,14 +109,20 @@ Compiled from the mini-shop recording, the program replays with Blue Mug ×2 and
 
 - The element's real role and accessible name come from Playwright's `aria_snapshot()`.
 - Candidates are tried in this order: `data-testid`, then for form fields `label` and then role + name, for everything else role + name and then `text`, then `placeholder`, then a stable CSS selector (`#id` or `[name]`), then the XPath.
+- When an accessible name ends in a price or count ("Place demo order · $159.98"), the stable start ("Place demo order") is added as a substring-matching role locator, so the step still works for another product or quantity.
 - A candidate is kept **only if it matches exactly one element and that element is the recorded one.**
 
-**Parameters.** Recorded input values become `$params`, with the longest values replaced first. Short values such as `2` are replaced only as whole words, and literal `$` becomes `$$`. This applies to values, locator names and check text, but never to CSS or XPath.
+**Parameters.** Recorded input values become `$params`, with the longest values replaced first. Short values such as `2` are replaced only as whole words, and literal `$` becomes `$$`. This applies to values, locator names, check text and the start URL, but never to CSS or XPath.
+
+- **Start URL.** An input that appears in the start URL (the storefront's `run_id`) becomes a param, so each replay gets a fresh session.
+- **Check text.** Inputs the task text doesn't name are templated but never picked as check text.
 
 **Checks:**
 
 - Pre-checks: the page path, the target is unique, and the target is enabled (for clicks).
 - Post-checks: the field's value (for fill and select), the new page path, and the shortest text line on the new page that names an input (for example `$qty × $product`). That last one catches a wrong-item click.
+  - Lines that would still contain a number after templating, such as a price, are skipped; if every line has one, the input alone is used (`$product`).
+  - URL checks match any value for path parts that name the chosen item: a slug like `/products/blue-headphones`, or a numeric id.
 - Success check: a heading or text line on the final page that names an input.
 - A click that adds no text but makes its own target disappear (dismissing a banner) gets an `absent` post-check.
 
@@ -173,7 +179,7 @@ The full design, including the LLM pass:
 | Change | `version`, `source` (recorded, compiled, healed, manual), `step`, `tier`, `reason`, `at` | History; `Program.bump(...)` appends one |
 
 - **Optional steps.** If a step's `when` check fails, the step is skipped. Evaluate `when` with a short timeout (the dry run used 500 ms).
-- **Parameters.** `$name` can appear in any string: values, URLs, check text, locator names such as `{role: link, name: $product}`. `$$` is a literal `$`. The runtime calls `program.resolved(params)` once per run.
+- **Parameters.** `$name` can appear in any string: values, URLs, check text, locator names such as `{role: link, name: $product}`. Use `${name}` when a letter or digit directly follows (`${product}Qty`). `$$` is a literal `$`. The runtime calls `program.resolved(params)` once per run.
 - **Healing.** `program.bump(source="healed", step=…, tier=…, reason=…)` returns the next version. Edit the copy, then `save()` it.
 
 ### Runtime (A)

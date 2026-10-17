@@ -12,6 +12,7 @@ param descriptions and the success text; without it the v0 output is used as is.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,8 +20,9 @@ from typing import Any, Callable
 
 from browseen.compiler.annotate import LLMResult, StepContext
 from browseen.compiler.locators import PageAnalyzer, fingerprint_attrs
-from browseen.compiler.params import mentions_input, param_type, templatize, url_path, url_pattern
-from browseen.program import Action, Change, Check, Fingerprint, Locator, Param, Program, Step, Target, save
+from browseen.compiler.params import SHORT, mentions_input, param_type, templatize, url_path, url_pattern
+from browseen.program import (PARAM_RE, Action, Change, Check, Fingerprint, Locator, Param, Program, Step, Target,
+                              param_refs, save)
 from browseen.recorder.trace import Trace, TraceAction, TraceStep
 
 ACTIONS = {"navigate": "navigate", "click": "click", "input": "fill", "select_dropdown": "select", "send_keys": "press"}
@@ -146,33 +148,51 @@ def _intent(k: Kept, role: str | None, name: str | None, action: Action, inputs:
     return f"Go to {action.url}"
 
 
-def _input_line(lines: list[str], inputs: dict[str, Any]) -> str | None:
-    """The shortest text line that names a recorded input, e.g. '2 × Blue Mug'."""
-    hits = [line for line in lines if mentions_input(line, inputs)]
-    return min(hits, key=len) if hits else None
+def _content_inputs(trace: Trace) -> dict[str, Any]:
+    """The inputs the task text names. Others (like a run_id that only appears in the start URL)
+    are still templated, but never chosen as the text a check looks for."""
+    named = param_refs(trace.task_template)
+    return {k: v for k, v in trace.inputs.items() if k in named} or dict(trace.inputs)
+
+
+def _is_stable(text: str) -> bool:
+    """No digits left outside $params: a price like $159.98 changes when the inputs do."""
+    return not re.search(r"\d", PARAM_RE.sub("", text))
+
+
+def _check_text(lines: list[str], content: dict[str, Any], inputs: dict[str, Any]) -> str | None:
+    """Text for a text_visible check: the shortest line naming a task input, templated, with no
+    leftover numbers. If every such line has one, the input on its own (e.g. "$product")."""
+    hits = [line for line in lines if mentions_input(line, content)]
+    clean = [t for t in (templatize(line, inputs) for line in hits) if _is_stable(t)]
+    if clean:
+        return min(clean, key=len)
+    seen = [k for k, v in content.items() if len(str(v)) >= SHORT and any(str(v) in line for line in hits)]
+    return f"${max(seen, key=lambda k: len(str(content[k])))}" if seen else None
 
 
 def _effect_checks(k: Kept, pa: PageAnalyzer, run_dir: Path, inputs: dict[str, Any], report: CompileReport,
-                   step_id: str, target_locator: Locator | None = None) -> list[Check]:
+                   step_id: str, target_locator: Locator | None = None,
+                   content: dict[str, Any] | None = None) -> list[Check]:
     """Post-checks for what a click / key press / navigation did to the page.
 
     `target_locator` is the step's first verified locator (recorded literals, not $params).
     """
+    content = content or inputs
     checks: list[Check] = []
     changed_url = k.step.url_after and url_path(k.step.url) != url_path(k.step.url_after)
     if changed_url:
-        checks.append(Check(url_matches=url_pattern(k.step.url_after)))
+        checks.append(Check(url_matches=url_pattern(k.step.url_after, inputs)))
     after = _read(run_dir, k.step.html_after)
     if after is None:
         return checks
     pa.load(after)
     after_lines = pa.text_lines()
-    named = _input_line(after_lines, inputs)
     # A click that made its own target go away (dismissing a banner or popup).
     target_gone = target_locator is not None and target_locator.to_playwright(pa.page).count() == 0
     if changed_url:
-        if named:
-            checks.append(Check(text_visible=templatize(named, inputs)))
+        if text := _check_text(after_lines, content, inputs):
+            checks.append(Check(text_visible=text))
         return checks
     before = _read(run_dir, k.step.html_before)
     before_lines = set()
@@ -180,10 +200,11 @@ def _effect_checks(k: Kept, pa: PageAnalyzer, run_dir: Path, inputs: dict[str, A
         pa.load(before)
         before_lines = set(pa.text_lines())
     new = [line for line in after_lines if line not in before_lines and len(line) <= MAX_NEW_TEXT]
-    if named and named in new:
-        checks.append(Check(text_visible=templatize(named, inputs)))
-    elif new:
-        checks.append(Check(text_visible=templatize(new[0], inputs)))
+    stable_new = [t for t in (templatize(line, inputs) for line in new) if _is_stable(t)]
+    if text := _check_text(new, content, inputs):
+        checks.append(Check(text_visible=text))
+    elif stable_new:
+        checks.append(Check(text_visible=stable_new[0]))
     elif target_gone:
         checks.append(Check(absent=_templated(target_locator, inputs)))
     else:
@@ -198,11 +219,11 @@ def _success(trace: Trace, pa: PageAnalyzer, run_dir: Path, inputs: dict[str, An
         return [], []
     pa.load(_read(run_dir, final.html_after) or "")
     lines = pa.text_lines()
-    line = _input_line(pa.headings(), inputs) or _input_line(lines, inputs)
-    if line:
-        return [Check(text_visible=templatize(line, inputs))], lines
+    content = _content_inputs(trace)
+    if text := _check_text(pa.headings(), content, inputs) or _check_text(lines, content, inputs):
+        return [Check(text_visible=text)], lines
     url = final.url_after or final.url
-    return ([Check(url_matches=url_pattern(url))] if url else []), lines
+    return ([Check(url_matches=url_pattern(url, inputs))] if url else []), lines
 
 
 Annotator = Callable[..., tuple[Program, LLMResult]]
@@ -214,6 +235,7 @@ def compile_trace(trace: Trace, run_dir: Path, name: str,
     run_dir = Path(run_dir)
     report = CompileReport(trace.run_id)
     inputs = trace.inputs
+    content = _content_inputs(trace)
     kept = normalize(trace, run_dir, report)
     if not kept:
         raise ValueError("nothing to compile: no replayable actions in the trace")
@@ -259,7 +281,7 @@ def compile_trace(trace: Trace, run_dir: Path, name: str,
                 target = Target(locators=locators, fingerprint=Fingerprint(
                     tag=el.tag, role=role, name=el_name or el.ax_name, attributes=fingerprint_attrs(el), xpath=el.xpath))
                 if k.step.url:
-                    pre.append(Check(url_matches=url_pattern(k.step.url)))
+                    pre.append(Check(url_matches=url_pattern(k.step.url, inputs)))
                 pre.append(Check(target_unique=True))
                 if k.type == "click":
                     pre.append(Check(target_enabled=True))
@@ -267,7 +289,7 @@ def compile_trace(trace: Trace, run_dir: Path, name: str,
                     post.append(Check(target_value=action.value))
 
             if k.type in ("click", "press", "navigate") and k.last_in_step:
-                post.extend(_effect_checks(k, pa, run_dir, inputs, report, step_id, first_literal))
+                post.extend(_effect_checks(k, pa, run_dir, inputs, report, step_id, first_literal, content))
 
             intent = _intent(k, role, el_name, action, inputs)
             steps.append(Step(id=step_id, intent=intent, action=action, target=target, pre=pre, post=post))
@@ -281,7 +303,8 @@ def compile_trace(trace: Trace, run_dir: Path, name: str,
         success, final_lines = _success(trace, pa, run_dir, inputs)
 
     program = Program(
-        program=name, version=1, task=trace.task_template, start_url=trace.start_url,
+        # Input values in the start URL (e.g. a run_id) become params, so each replay gets its own.
+        program=name, version=1, task=trace.task_template, start_url=templatize(trace.start_url, inputs),
         params={k: Param(type=param_type(v), example=v) for k, v in inputs.items()},
         steps=steps, success=success,
         history=[Change(version=1, source="compiled", reason=f"compiled from {trace.run_id} (compiler v0, no LLM)",

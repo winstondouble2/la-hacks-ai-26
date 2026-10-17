@@ -87,6 +87,7 @@ def test_usage_from_entries_splits_cache_tokens():
 def test_parse_inputs_types_numbers():
     assert parse_inputs(["qty=2", "product=Blue Mug", "price=1.5", "note=a=b"]) == {
         "qty": 2, "product": "Blue Mug", "price": 1.5, "note": "a=b"}
+    assert parse_inputs(["postal=02134", "zero=0"]) == {"postal": "02134", "zero": 0}  # leading zero stays text
     with pytest.raises(ValueError):
         parse_inputs(["no-equals-sign"])
 

@@ -28,7 +28,13 @@ def templatize(text: str, inputs: dict[str, Any]) -> str:
         return out
     names = {f"p{i}": name for i, (name, _) in enumerate(values)}
     pattern = re.compile("|".join(f"(?P<p{i}>{_value_pattern(v)})" for i, (_, v) in enumerate(values)))
-    return pattern.sub(lambda m: "$" + names[m.lastgroup], out)
+
+    def placeholder(m: re.Match) -> str:
+        name = names[m.lastgroup]
+        # "$productQty" would read as one param; use braces when a letter or digit follows.
+        return f"${{{name}}}" if re.match(r"[A-Za-z0-9_]", out[m.end():m.end() + 1]) else f"${name}"
+
+    return pattern.sub(placeholder, out)
 
 
 def mentions_input(text: str, inputs: dict[str, Any]) -> bool:
@@ -50,6 +56,18 @@ def url_path(url: str | None) -> str | None:
     return (urlparse(url).path or "/") if url else None
 
 
-def url_pattern(url: str) -> str:
-    """Regex matching any URL with the same path, ignoring query and fragment."""
-    return re.escape(url_path(url)) + r"(\?|#|$)"
+def _dynamic_segment(segment: str, inputs: dict[str, Any]) -> bool:
+    """A path part that names the chosen item (a slug like blue-headphones, or a numeric id)."""
+    if re.fullmatch(r"\d{2,}", segment):
+        return True
+    tokens = [t for t in re.split(r"[-_.]+", segment.lower()) if t]
+    words = set(re.findall(r"[a-z0-9]+", " ".join(_text(v) for v in inputs.values()).lower()))
+    return bool(tokens) and any(len(t) >= SHORT for t in tokens) and all(t in words for t in tokens)
+
+
+def url_pattern(url: str, inputs: dict[str, Any] | None = None) -> str:
+    """Regex matching any URL with the same path, ignoring query and fragment. Path parts that
+    name an input-chosen item (/products/blue-headphones) match any value."""
+    parts = url_path(url).split("/")
+    return "/".join("[^/?#]+" if part and inputs and _dynamic_segment(part, inputs) else re.escape(part)
+                    for part in parts) + r"(\?|#|$)"

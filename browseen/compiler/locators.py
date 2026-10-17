@@ -82,6 +82,13 @@ def stable_css(el: TraceElement) -> str | None:
     return None
 
 
+def name_core(name: str) -> str | None:
+    """The stable start of an accessible name that ends in a price or count:
+    'Place demo order · $159.98' -> 'Place demo order', 'Cart (2)' -> 'Cart'."""
+    core = re.split(r"\s+[·•|–—-]\s+|\s*\(|\s*\$|\s+\d", name, maxsplit=1)[0].strip()
+    return core if len(core) >= 3 and core != name.strip() else None
+
+
 def fingerprint_attrs(el: TraceElement) -> dict[str, str]:
     return {k: v for k, v in el.attributes.items() if k in FINGERPRINT_ATTRS}
 
@@ -145,6 +152,8 @@ class PageAnalyzer:
                 options.append(Locator(label=name, exact=True))
             if role:
                 options.append(Locator(role=role, name=name, exact=True))
+                if core := name_core(name):  # substring match: survives a changing price or count
+                    options.append(Locator(role=role, name=core))
             if role not in FIELD_ROLES:
                 options.append(Locator(text=name, exact=True))
         elif role:
