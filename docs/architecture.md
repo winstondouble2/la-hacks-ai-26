@@ -56,12 +56,36 @@ This component wraps a Browser Use `Agent` and uses its step hooks (`on_step_sta
 - **The agent's stated goal for the step**, which becomes the step's intent.
 - **Tokens and latency** for the step, which feed the cost counters.
 
-Output: `runs/<run_id>/trace.json` (gitignored), plus Browser Use's own history file from `save_to_file()`.
+**Built.** The code is in `browseen/recorder/`, and you run it like this:
 
-Two setup notes:
+```bash
+python -m browseen.recorder record 'Buy $qty of $product and check out as $name, $address' --url http://localhost:8765/ --input product="Blue Mug" --input qty=2 --input name="Ada Lovelace" --input address="1 Main St" --name buy-item
+```
 
-- **Hour-one check:** pin the browser-use version in `requirements.txt`. The latest on PyPI is 0.13.11, which needs Python ≥ 3.11. Confirm that the history has element data.
-- **Model gotcha:** Browser Use's `ChatAnthropic` forces `tool_choice` unless thinking is set, and Claude Opus 5.5 / Sonnet 5.5 reject forced tool choice with HTTP 400. Use `ChatAnthropic(model="claude-opus-5-5", thinking={"type": "adaptive"})`, and don't set `temperature`, `top_p` or `seed`.
+- **The task is a template plus inputs.** The agent gets the filled-in text, and the trace keeps both, so the compiler knows exactly which literals are parameters.
+- **Viewing a run:** `python -m browseen.recorder show runs/<run_id>` prints it without any API calls.
+- **On the mini shop,** a recording takes about 30 s and costs about $0.18 (6 LLM calls). The first call writes the prompt cache; later ones read it.
+
+Each run writes `runs/<run_id>/` (gitignored):
+
+| File | What it is |
+|---|---|
+| `trace.json` | The **trace format**, defined in `browseen/recorder/trace.py`, which B owns. It holds, for each step: the URL before and after; the agent's `goal` (which becomes the intent), memory and evaluation; the actions with Browser Use's raw names and params; the element for each action (`tag`, `attributes`, absolute `xpath`, `ax_name`, `bounds`); the step's duration and token usage; and the page and screenshot paths. It also holds the run's totals and the agent's own success claim. Step 0 is the initial navigation. |
+| `history.json` | Browser Use's own history file, which the benchmark's Replay baseline needs |
+| `events.jsonl` | The run as dashboard events (`mode: "llm"`, `version: 0`, steps `a1`, `a2`, …), with per-step `llm_calls` / `tokens` / `usd` |
+| `html/step_NN_before.html`, `html/step_NN_after.html` | The page before and after step NN. **"Before" is what the compiler tests locators on**; every recorded XPath matched exactly one element in it. |
+| `screenshots/step_NN.png` | Taken by Browser Use at the start of step NN |
+
+The Browser Use setup is shared in `browseen/agent.py` (`make_agent()`), which A's tier-3 healer should use too. Each setting fixes a real failure with Claude Opus 5.5:
+
+- **`thinking={"type": "adaptive"}`.** Without it, the wrapper forces `tool_choice`, and the API returns HTTP 400.
+- **`use_thinking=False`.** Without it, Browser Use's `thinking` output field is refused as reasoning extraction.
+- **Server-side `fallbacks` to `claude-opus-4-8`.** If Opus 5.5 refuses a step, Anthropic retries it on the fallback model.
+- **`enable_default_extensions=False`.** Otherwise a cookie-banner auto-dismisser hides banners from the recording.
+- **`use_judge=False`.** The judge makes extra LLM calls; we verify success ourselves.
+- **Chrome flags for the macOS keychain.** They stop Chromium from hanging at startup.
+
+Prices are in `browseen/costs.py`.
 
 ### Compiler (B)
 

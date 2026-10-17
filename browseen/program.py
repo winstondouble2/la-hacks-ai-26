@@ -236,7 +236,7 @@ class Program(_Model):
             raise KeyError(f"missing params: {missing}")
         if unknown := sorted(set(params) - set(self.params)):
             raise KeyError(f"unknown params: {unknown}")
-        values = {k: (str(v).lower() if isinstance(v, bool) else str(v)) for k, v in params.items()}
+        values = {k: _as_text(v) for k, v in params.items()}
         data = self.model_dump(mode="json")
         data.update(_substitute(self._templated(), values))
         return Program.model_validate(data)
@@ -269,6 +269,20 @@ def _strings(obj: Any) -> Iterator[str]:
 
 def _param_refs(obj: Any) -> set[str]:
     return {m.group(1) for s in _strings(obj) for m in PARAM_RE.finditer(s) if m.group(1) != "$"}
+
+
+def _as_text(value: Any) -> str:
+    return str(value).lower() if isinstance(value, bool) else str(value)
+
+
+def param_refs(text: str) -> set[str]:
+    """The $params used in a string."""
+    return _param_refs(text)
+
+
+def substitute(text: str, values: dict[str, Any]) -> str:
+    """Fill $params in one string ($$ becomes $). Raises KeyError for a param with no value."""
+    return _substitute(text, {k: _as_text(v) for k, v in values.items()})
 
 
 def _substitute(obj: Any, values: dict[str, str]) -> Any:
