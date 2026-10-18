@@ -1,0 +1,38 @@
+<!doctype html>
+<!-- ROLE A TEST FIXTURE: a "Notify me" placeholder holds id=add for 400 ms before the real "Add to cart" button replaces it. A fallback chosen too early (#add) would click the placeholder. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Product · Mini Shop</title>
+  <script src="shop.js"></script>
+</head>
+<body>
+  <header><a href="index.html">Mini Shop</a></header>
+  <main>
+    <h1 id="name"></h1>
+    <p id="price"></p>
+    <label for="qty">Quantity</label>
+    <input id="qty" name="qty" type="number" min="1" value="1">
+    <button id="add" type="button">Notify me</button>
+  </main>
+  <script>
+    const product = findProduct(new URLSearchParams(location.search).get("id"));
+    document.getElementById("name").textContent = product.name;
+    document.getElementById("price").textContent = "$" + product.price;
+    function addToCart(product) {
+        const qty = Math.max(1, parseInt(document.getElementById("qty").value, 10) || 1);
+        const cart = getCart();
+        cart.push({ id: product.id, name: product.name, qty });
+        setCart(cart);
+        location.href = "checkout.html";
+      }
+    document.getElementById("add").addEventListener("click", () => fetch("notify-clicked"));
+    setTimeout(() => {
+      const b = document.createElement("button");
+      b.id = "add"; b.type = "button"; b.textContent = "Add to cart";
+      b.addEventListener("click", () => addToCart(product));
+      document.getElementById("add").replaceWith(b);
+    }, 400);
+  </script>
+</body>
+</html>
