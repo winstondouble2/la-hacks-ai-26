@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Test cases · Browseen</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='shop.css') }}">
+</head>
+<body>
+  <header><a class="brand" href="/shop">browseen<span>shop</span></a><nav class="site-nav" aria-label="Main navigation"><a href="/shop">Shop</a><a class="active" href="/test-cases">Test cases</a></nav><span class="demo">Local test lab</span></header>
+  <main class="test-lab">
+    <p class="eyebrow">BROWSEEN BENCHMARK LAB</p>
+    <h1>One shop.<br>Eight controlled changes.</h1>
+    <p class="intro">Each case uses the same Blue Wireless Headphones task, but changes one part of the page or flow. Every launched case has its own run ID, independent verification, and token-telemetry receiver.</p>
+    <section class="lab-actions" aria-label="Test case actions">
+      <a class="primary-link" href="/lab/demo">Run reload demo</a>
+      <a class="secondary-link" href="/lab/__telemetry?run_id=manual">View token telemetry</a>
+    </section>
+    <section class="test-guide" aria-label="How testing works">
+      <div><strong>1. Choose a case</strong><p>Launch a stable mutation and seed.</p></div>
+      <div><strong>2. Run the flow</strong><p>Search, add the product, and complete any inserted step.</p></div>
+      <div><strong>3. Verify it</strong><p>The fixture checks the final cart state independently.</p></div>
+    </section>
+    <p class="reload-note"><strong>Demo order:</strong> M00, M00 repeat, M01, M02, M03, M04, M09, M11, M11 repeat, M14. Reload the guided demo page to move to the next real case.</p>
+    <section aria-labelledby="case-heading">
+      <div class="results-header"><h2 id="case-heading">All test cases</h2><span>{{ test_cases|length }} scenarios</span></div>
+      <div class="test-case-grid">
+      {% for case in test_cases %}
+        <article class="test-case {{ case.accent }}" data-testid="test-case-{{ case.id }}">
+          <div class="case-meta"><span>{{ case.id }}</span><small>{{ case.level }}</small></div>
+          <h3>{{ case.title }}</h3>
+          <p>{{ case.description }}</p>
+          <a href="/lab/demo/case/{{ case.id }}">Open in reload demo</a>
+        </article>
+      {% endfor %}
+      </div>
+    </section>
+    <p class="lab-note">The shop is a synthetic demo. Each run has its own cart and order. Restart the demo for a fresh run; no real payments or shipments are made.</p>
+  </main>
+  <footer>Browseen demo shop · Synthetic products, no real purchases.</footer>
+</body>
+</html>

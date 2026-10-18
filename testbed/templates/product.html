@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ product.name }} · Browseen</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='shop.css') }}">
+</head>
+<body>
+  <header><a class="brand" href="/shop">browseen<span>shop</span></a><nav class="site-nav" aria-label="Main navigation"><a href="/shop">Shop</a><a href="/test-cases">Test cases</a></nav><span class="demo">Simulated store</span></header>
+  <main>
+    <a class="back-link" href="/shop">← Back to collection</a>
+    <section class="product-detail" aria-labelledby="product-name">
+      <div class="product-art {{ product.id }}" aria-hidden="true">{% if product.id == 'blue-headphones' %}♫{% elif product.id == 'blue-mug' %}☕{% else %}♨{% endif %}</div>
+      <div>
+        <p class="eyebrow">THE EVERYDAY COLLECTION</p>
+        <h1 id="product-name">{{ product.name }}</h1>
+        <p class="intro">{{ product.description }}</p>
+        <p class="detail-price" data-testid="product-price">${{ '%.2f'|format(product.price_cents / 100) }}</p>
+        <p class="test-case-callout">Want to test this product flow? <a href="/test-cases">Open the controlled test cases</a>.</p>
+      </div>
+    </section>
+  </main>
+  <footer>Browseen demo shop · Synthetic products, no real purchases.</footer>
+</body>
+</html>
