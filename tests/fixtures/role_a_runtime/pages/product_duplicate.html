@@ -1,0 +1,37 @@
+<!doctype html>
+<!-- ROLE A TEST FIXTURE: a second "Add to cart" button (a gift card upsell) makes the primary role locator ambiguous; #add stays unique. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Product · Mini Shop</title>
+  <script src="shop.js"></script>
+</head>
+<body>
+  <header><a href="index.html">Mini Shop</a></header>
+  <main>
+    <h1 id="name"></h1>
+    <p id="price"></p>
+    <label for="qty">Quantity</label>
+    <input id="qty" name="qty" type="number" min="1" value="1">
+    <button id="add" type="button">Add to cart</button>
+  </main>
+  <aside>
+    <p>Add a gift card?</p>
+    <button id="add-gift" type="button">Add to cart</button>
+  </aside>
+  <script>
+    const product = findProduct(new URLSearchParams(location.search).get("id"));
+    document.getElementById("name").textContent = product.name;
+    document.getElementById("price").textContent = "$" + product.price;
+    function addToCart(product) {
+        const qty = Math.max(1, parseInt(document.getElementById("qty").value, 10) || 1);
+        const cart = getCart();
+        cart.push({ id: product.id, name: product.name, qty });
+        setCart(cart);
+        location.href = "checkout.html";
+      }
+    document.getElementById("add").addEventListener("click", () => addToCart(product));
+    document.getElementById("add-gift").addEventListener("click", () => addToCart({ id: "gift-card", name: "Gift Card" }));
+  </script>
+</body>
+</html>
